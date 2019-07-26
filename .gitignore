@@ -1,0 +1,5 @@
+/target
+**/*.rs.bk
+/.idea/
+/peertube_crawler/
+/elastic_search/
