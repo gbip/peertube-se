@@ -26,6 +26,8 @@ use elastic::client::AsyncClientBuilder;
 use elastic::AsyncClient;
 
 use peertube_lib::db;
+use peertube_lib::db::process_videos;
+use peertube_lib::db::Database;
 use peertube_lib::video::Video;
 
 const FIRST: &str = "gouttedeau.space";
@@ -202,7 +204,8 @@ fn fetch(
                     ok(result)
                 })
                 .and_then(|data| {
-                    db::add_videos_to_db(data.clone());
+                    let database = Database::default();
+                    process_videos(database, data.clone());
                     write_to_file(filename, data)
                 })
                 .map_err(|_| ())
