@@ -10,6 +10,9 @@ name="elastic"
 [[bin]]
 name="crawler"
 
+[[bin]]
+name="server"
+
 [lib]
 name="peertube_lib"
 
@@ -23,3 +26,9 @@ petgraph="0.4.13"
 petgraph-graphml = "1.0.0"
 elastic = "~0.21.0-pre.5"
 elastic_derive = "~0.21.0-pre.5"
+rocket = "0.4.2"
+
+[dependencies.rocket_contrib]
+version = "0.4.2"
+default-features = false
+features = ["handlebars_templates", "tera_templates"]
