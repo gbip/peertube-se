@@ -1,0 +1,11 @@
+{{#*inline "page"}}
+    {{#each videos}}
+    <div id="video">
+        <h4>{{this.name}}</h4>
+        <p>{{this.description}}</p>
+        <p>{{this.creator}}</p>
+        <p>{{this.views}} vues, {{this.likes}} likes </p>
+    </div>
+    {{/each}}
+{{/inline}}
+{{~> (parent)~}}

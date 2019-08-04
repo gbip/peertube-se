@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 
-#[derive(Serialize, Deserialize, ElasticType, Clone)]
+#[derive(Debug, Serialize, Deserialize, ElasticType, Clone)]
 pub struct Video {
     pub description: String,
     pub name: String,
