@@ -1,0 +1,63 @@
+.search_bar {
+    margin: auto;
+    border-radius: 5px;
+    height: 2.8em;
+    background-color: #fff;
+    border: 1px solid rgba(0,0,0,0.15);
+    box-shadow: 0 2px 3px rgba(0,0,0,0.06);
+    width: 100%;
+    padding-left: .75em;
+    padding-right: 6.5em;
+}
+
+.search_button {
+    background-image: url("/static/glass.svg");
+    background-repeat: no-repeat;
+    background-color: transparent;
+    background-position: 50% 50%;
+    color: #999;
+    height: 2.8em;
+    width: 100%;
+    border-radius: 5px;
+    border: 1px solid rgba(0,0,0,0.15);
+    box-shadow: 0 2px 3px rgba(0,0,0,0.06);
+}
+
+.search_button:hover {
+    background-color: rgba(153, 158, 156, 0.28);
+    color: white;
+}
+
+* {
+    -webkit-box-sizing: border-box;
+    -moz-box-sizing: border-box;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: Verdana, Geneva, sans-serif;
+    display: block;
+}
+
+.title {
+    font-size: 45px;
+    text-align: center;
+    color: #4F4F4F;
+}
+
+.left {
+    float:left;
+    width: 90%;
+}
+
+.right {
+    float: left;
+    width: 10%;
+}
+
+.wrapper {
+    width: 500px;
+    overflow: hidden; /* will contain if #first is longer than #second */
+    margin:auto;
+
+}

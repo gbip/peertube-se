@@ -5,9 +5,11 @@ use elastic::client::SyncClientBuilder;
 use peertube_lib::video::Video;
 use rocket::http::RawStr;
 use rocket::{get, routes};
+use rocket_contrib::serve::StaticFiles;
 use rocket_contrib::templates::Template;
 use serde::Serialize;
 use serde_json::json;
+use std::fs::File;
 
 #[derive(Serialize)]
 struct VideoTemplate {
@@ -16,8 +18,8 @@ struct VideoTemplate {
 }
 
 #[get("/index.html")]
-fn index() -> &'static str {
-    "Welcome to the Peertube search engine"
+fn index() -> File {
+    File::open("static/index.html").expect("Missing index.html")
 }
 
 #[get("/search?<query>")]
@@ -57,6 +59,7 @@ fn search(query: &RawStr) -> Template {
 fn main() {
     rocket::ignite()
         .attach(Template::fairing())
+        .mount("/static", StaticFiles::from("static"))
         .mount("/", routes![index, search])
         .launch();
 }

@@ -36,7 +36,7 @@ const URL_TO_TRY: [&str; 2] = ["/server/following", "/server/followers"];
 
 const OUTPUT_DIR: &str = "crawled/";
 
-const LIMIT: u8 = 10;
+const LIMIT: u8 = 0;
 
 #[derive(Debug, Hash, Clone, Serialize, Deserialize)]
 struct Instance {
@@ -74,7 +74,7 @@ fn process(
         nodes.lock().expect("Poison").insert(item.clone());
         let nodes_clone = nodes.clone();
         let result_clone = result.clone();
-        if *(count.lock().unwrap()) < LIMIT {
+        if *(count.lock().unwrap()) < LIMIT || LIMIT == 0 {
             *(count.lock().unwrap()) += 1;
             tokio::spawn(fetch(item, nodes_clone, result_clone, count));
         }
