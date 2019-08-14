@@ -67,13 +67,12 @@ fn process_video(db: Arc<Database>, video: Arc<Video>) -> impl Future<Item = (),
         .update_video(&video)
         .send()
         .and_then(|resp| {
-            //println!("Updated ? :{}", resp.updated());
             if !resp.updated() {
                 println!("Video not updated");
             }
             ok(())
         })
-        .map_err(move |e| {
+        .map_err(move |_| {
             tokio::spawn(
                 db.index_video(&video_handle)
                     .send()
@@ -83,7 +82,6 @@ fn process_video(db: Arc<Database>, video: Arc<Video>) -> impl Future<Item = (),
                     })
                     .map_err(|e| println!("Indexing video : {}", e)),
             );
-            println!("Failed to update video : {}", e)
         });
     Box::new(future)
 }

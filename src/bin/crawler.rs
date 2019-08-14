@@ -15,6 +15,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Write};
 
+use futures::future::join_all;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio;
@@ -28,26 +29,25 @@ use elastic::AsyncClient;
 use peertube_lib::db;
 use peertube_lib::db::process_videos;
 use peertube_lib::db::Database;
+use peertube_lib::instance::{Instance, InstanceDb};
 use peertube_lib::video::Video;
-
-const FIRST: &str = "gouttedeau.space";
 
 const URL_TO_TRY: [&str; 2] = ["/server/following", "/server/followers"];
 
 const OUTPUT_DIR: &str = "crawled/";
 
-const LIMIT: u8 = 0;
+const LIMIT: u64 = 0;
 
 #[derive(Debug, Hash, Clone, Serialize, Deserialize)]
-struct Instance {
+struct APIInstance {
     name: String,
     followers: Vec<String>,
     following: Vec<String>,
 }
 
-impl Instance {
-    pub fn new(name: String) -> Instance {
-        Instance {
+impl APIInstance {
+    pub fn new(name: String) -> APIInstance {
+        APIInstance {
             name: name,
             followers: vec![],
             following: vec![],
@@ -55,28 +55,32 @@ impl Instance {
     }
 }
 
-impl PartialEq for Instance {
-    fn eq(&self, other: &Instance) -> bool {
+impl PartialEq for APIInstance {
+    fn eq(&self, other: &APIInstance) -> bool {
         self.name == other.name
     }
 }
 
-impl Eq for Instance {}
+impl Eq for APIInstance {}
 
 fn process(
     item: String,
     nodes: &Arc<Mutex<HashSet<String>>>,
-    result: &Arc<Mutex<HashSet<Instance>>>,
-    count: Arc<Mutex<u8>>,
+    result: &Arc<Mutex<HashSet<APIInstance>>>,
+    count: Arc<Mutex<u64>>,
+    db: Arc<Mutex<InstanceDb>>,
 ) {
+    db.lock().unwrap().insert_instance(Instance {
+        base_url: item.clone(),
+        blacklisted: false,
+    });
     if !nodes.lock().unwrap().contains(&item) {
-        //println!("Added {}", &item);
         nodes.lock().expect("Poison").insert(item.clone());
         let nodes_clone = nodes.clone();
         let result_clone = result.clone();
         if *(count.lock().unwrap()) < LIMIT || LIMIT == 0 {
             *(count.lock().unwrap()) += 1;
-            tokio::spawn(fetch(item, nodes_clone, result_clone, count));
+            tokio::spawn(fetch(item, nodes_clone, result_clone, count, db));
         }
     }
 }
@@ -102,15 +106,38 @@ fn write_to_file(filename: String, data: Vec<Video>) -> impl Future<Error = ()> 
     open_file
 }
 
+fn fetch_all(
+    instances: Vec<Instance>,
+    nodes: Arc<Mutex<HashSet<String>>>,
+    result: Arc<Mutex<HashSet<APIInstance>>>,
+    count: Arc<Mutex<u64>>,
+    db: Arc<Mutex<InstanceDb>>,
+) -> impl Future<Item = (), Error = ()> {
+    let mut futures = vec![];
+    for instance in instances {
+        let f = fetch(
+            instance.base_url,
+            nodes.clone(),
+            result.clone(),
+            count.clone(),
+            db.clone(),
+        );
+        futures.push(f);
+    }
+    let future = join_all(futures);
+    future.map(|_| ())
+}
+
 fn fetch(
     name: String,
     nodes: Arc<Mutex<HashSet<String>>>,
-    result: Arc<Mutex<HashSet<Instance>>>,
-    count: Arc<Mutex<u8>>,
+    result: Arc<Mutex<HashSet<APIInstance>>>,
+    count: Arc<Mutex<u64>>,
+    db: Arc<Mutex<InstanceDb>>,
 ) -> impl Future<Item = (), Error = ()> {
     lazy(move || {
         println!("Processing : {}", name);
-        let instance = Arc::new(Mutex::new(Instance::new(name.clone())));
+        let instance = Arc::new(Mutex::new(APIInstance::new(name.clone())));
         // Request ressources from host
         let mut tasks = Vec::new();
         let base = "https://".to_owned() + name.clone().as_str() + "/api/v1";
@@ -121,6 +148,7 @@ fn fetch(
             let nodes_local = nodes.clone();
             let result_local = result.clone();
             let name_local = name.clone();
+            let db_local = db.clone();
             let query = base.clone() + url;
             let task = ClientBuilder::new()
                 .timeout(Duration::new(5, 0))
@@ -138,6 +166,7 @@ fn fetch(
                                     &nodes_local,
                                     &result_local,
                                     count_local.clone(),
+                                    db_local.clone(),
                                 );
                                 instance_local
                                     .lock()
@@ -158,6 +187,7 @@ fn fetch(
                                     &nodes_local,
                                     &result_local,
                                     count_local.clone(),
+                                    db_local.clone(),
                                 );
                             }
                         }
@@ -233,16 +263,26 @@ fn fetch(
 fn main() {
     // TODO : use SegQueue
     let nodes = Arc::new(Mutex::new(HashSet::new()));
-    let work = Arc::new(Mutex::new(VecDeque::new()));
-    let result: Arc<Mutex<HashSet<Instance>>> = Arc::new(Mutex::new(HashSet::new()));
+    let result: Arc<Mutex<HashSet<APIInstance>>> = Arc::new(Mutex::new(HashSet::new()));
     let count = Arc::new(Mutex::new(0));
-    work.lock().unwrap().push_back(FIRST.to_string());
-    nodes.lock().unwrap().insert(FIRST.to_string());
-    tokio::run(fetch(
-        FIRST.to_string(),
+
+    let instance_db = Arc::new(Mutex::new(InstanceDb::new()));
+    let instances = instance_db.lock().unwrap().get_all_instances();
+    //work.lock().unwrap().push_back(FIRST.to_string());
+    for instance in &instances {
+        nodes.lock().unwrap().insert(instance.base_url.clone());
+    }
+
+    tokio::run(fetch_all(
+        instances,
         nodes.clone(),
         result.clone(),
         count,
+        instance_db.clone(),
     ));
     println!("Found {} instances", nodes.lock().unwrap().len());
+    println!(
+        "Added {} instances",
+        instance_db.lock().unwrap().get_instance_added()
+    );
 }

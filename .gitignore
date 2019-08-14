@@ -4,3 +4,4 @@
 /peertube_crawler/
 /elastic_search/
 /crawled/
+**/*.db
