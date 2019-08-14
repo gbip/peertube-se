@@ -1,5 +1,7 @@
 #![allow(unused_imports)]
+use futures::future::join_all;
 use futures::Future;
+use log::*;
 use petgraph::dot::Dot;
 use petgraph::prelude::NodeIndex;
 use petgraph::{Graph, Undirected};
@@ -14,10 +16,8 @@ use std::collections::vec_deque::VecDeque;
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Write};
-
-use futures::future::join_all;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio;
 use tokio::prelude::future::lazy;
 use tokio::prelude::future::ok;
@@ -26,6 +26,7 @@ use tokio::prelude::AsyncWrite;
 use elastic::client::AsyncClientBuilder;
 use elastic::AsyncClient;
 
+use env_logger;
 use peertube_lib::db;
 use peertube_lib::db::process_videos;
 use peertube_lib::db::Database;
@@ -86,10 +87,9 @@ fn process(
 }
 
 fn write_to_file(filename: String, data: Vec<Video>) -> impl Future<Error = ()> {
-    println!("Opening {}", &filename);
     let open_file = tokio::fs::File::create(filename.clone())
         .map_err(|e| {
-            println!("{:?}", e);
+            warn!("Failed to open file {:?}", e);
             e
         })
         .and_then(move |mut file| {
@@ -98,10 +98,9 @@ fn write_to_file(filename: String, data: Vec<Video>) -> impl Future<Error = ()> 
                 acc += "\n";
                 acc
             });
-            println!("Writing to {}", filename);
             file.poll_write(&lines.as_bytes())
         })
-        .map_err(|e| println!("{:?}", e))
+        .map_err(|e| warn!("Failed to write to file : {:?}", e))
         .and_then(|_| ok(()));
     open_file
 }
@@ -136,7 +135,7 @@ fn fetch(
     db: Arc<Mutex<InstanceDb>>,
 ) -> impl Future<Item = (), Error = ()> {
     lazy(move || {
-        println!("Processing : {}", name);
+        trace!("Processing instance : {}", name);
         let instance = Arc::new(Mutex::new(APIInstance::new(name.clone())));
         // Request ressources from host
         let mut tasks = Vec::new();
@@ -158,44 +157,46 @@ fn fetch(
                 .send()
                 .and_then(|mut body| body.json::<serde_json::Value>())
                 .map(move |res| {
-                    for entry in res["data"].as_array().expect("Invalid json") {
-                        if let Some(hostname) = entry["follower"]["host"].as_str() {
-                            if hostname != name_local {
-                                process(
-                                    hostname.to_string(),
-                                    &nodes_local,
-                                    &result_local,
-                                    count_local.clone(),
-                                    db_local.clone(),
-                                );
-                                instance_local
-                                    .lock()
-                                    .unwrap()
-                                    .followers
-                                    .push(hostname.to_owned());
+                    if let Some(data) = res["data"].as_array() {
+                        for entry in data {
+                            if let Some(hostname) = entry["follower"]["host"].as_str() {
+                                if hostname != name_local {
+                                    process(
+                                        hostname.to_string(),
+                                        &nodes_local,
+                                        &result_local,
+                                        count_local.clone(),
+                                        db_local.clone(),
+                                    );
+                                    instance_local
+                                        .lock()
+                                        .unwrap()
+                                        .followers
+                                        .push(hostname.to_owned());
+                                }
                             }
-                        }
-                        if let Some(hostname) = entry["following"]["host"].as_str() {
-                            if hostname != name_local {
-                                instance_local
-                                    .lock()
-                                    .unwrap()
-                                    .following
-                                    .push(hostname.to_owned());
-                                process(
-                                    hostname.to_string(),
-                                    &nodes_local,
-                                    &result_local,
-                                    count_local.clone(),
-                                    db_local.clone(),
-                                );
+                            if let Some(hostname) = entry["following"]["host"].as_str() {
+                                if hostname != name_local {
+                                    instance_local
+                                        .lock()
+                                        .unwrap()
+                                        .following
+                                        .push(hostname.to_owned());
+                                    process(
+                                        hostname.to_string(),
+                                        &nodes_local,
+                                        &result_local,
+                                        count_local.clone(),
+                                        db_local.clone(),
+                                    );
+                                }
                             }
                         }
                     }
                     instance_local2
                 })
                 .map_err(move |e| {
-                    println!("Failed to fetch {} ", e);
+                    trace!("Failed to fetch instance : {} ", e);
                 });
             tasks.push(task);
         }
@@ -210,26 +211,30 @@ fn fetch(
                 .get(&query_videos)
                 .send()
                 .and_then(|mut body| body.json::<serde_json::Value>())
-                .map_err(move |e| println!("Error while fetching {} : {}", query_videos.clone(), e))
+                .map_err(move |e| {
+                    trace!("Error while fetching url {} : {}", query_videos.clone(), e)
+                })
                 .and_then(move |json| {
                     let mut result = vec![];
-                    for value in json["data"].as_array().unwrap() {
-                        let thumbnail_uri = value["thumbnailPath"].to_string();
-                        // Remove extra braces
-                        let thumbnail =
-                            instance_url.clone() + &thumbnail_uri[1..thumbnail_uri.len() - 1];
-                        result.push(Video {
-                            description: value["description"].to_string(),
-                            name: value["name"].to_string(),
-                            uuid: value["uuid"].to_string(),
-                            views: value["views"].as_i64().unwrap_or(0),
-                            likes: value["likes"].as_i64().unwrap_or(0),
-                            duration: value["duration"].as_i64().unwrap_or(0),
-                            created_at: value["createdAt"].to_string(),
-                            creator: value["account"]["name"].to_string() + "@" + &name,
-                            thumbnail,
-                            nsfw: value["nsfw"].as_bool().unwrap_or(false),
-                        });
+                    if let Some(data) = json["data"].as_array() {
+                        for value in data {
+                            let thumbnail_uri = value["thumbnailPath"].to_string();
+                            // Remove extra braces
+                            let thumbnail =
+                                instance_url.clone() + &thumbnail_uri[1..thumbnail_uri.len() - 1];
+                            result.push(Video {
+                                description: value["description"].to_string(),
+                                name: value["name"].to_string(),
+                                uuid: value["uuid"].to_string(),
+                                views: value["views"].as_i64().unwrap_or(0),
+                                likes: value["likes"].as_i64().unwrap_or(0),
+                                duration: value["duration"].as_i64().unwrap_or(0),
+                                created_at: value["createdAt"].to_string(),
+                                creator: value["account"]["name"].to_string() + "@" + &name,
+                                thumbnail,
+                                nsfw: value["nsfw"].as_bool().unwrap_or(false),
+                            });
+                        }
                     }
                     ok(result)
                 })
@@ -261,6 +266,8 @@ fn fetch(
 }
 
 fn main() {
+    env_logger::init();
+
     // TODO : use SegQueue
     let nodes = Arc::new(Mutex::new(HashSet::new()));
     let result: Arc<Mutex<HashSet<APIInstance>>> = Arc::new(Mutex::new(HashSet::new()));
@@ -272,7 +279,11 @@ fn main() {
     for instance in &instances {
         nodes.lock().unwrap().insert(instance.base_url.clone());
     }
-
+    info!(
+        "Starting crawling process from {} instances",
+        instances.len()
+    );
+    let start = Instant::now();
     tokio::run(fetch_all(
         instances,
         nodes.clone(),
@@ -280,9 +291,11 @@ fn main() {
         count,
         instance_db.clone(),
     ));
-    println!("Found {} instances", nodes.lock().unwrap().len());
-    println!(
+    let duration = start.elapsed();
+    info!("Found {} instances", nodes.lock().unwrap().len());
+    info!(
         "Added {} instances",
         instance_db.lock().unwrap().get_instance_added()
     );
+    info!("In {} sec", duration.as_secs());
 }

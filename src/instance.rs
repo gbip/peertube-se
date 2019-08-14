@@ -34,7 +34,7 @@ impl InstanceDb {
             "insert or ignore into peertube_instances (base_url, blacklisted) values (?1, ?2)",
             &[instance.base_url, instance.blacklisted.to_string()],
         ) {
-            Ok(_) => self.new_instance_inserted += 1,
+            Ok(_) => (),
             Err(_) => (),
         }
     }
