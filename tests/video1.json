@@ -1,0 +1,62 @@
+{
+	"id": 93,
+	"uuid": "9e672bff-0bc5-4021-8a50-7dce52d0edfa",
+	"name": "MéganeGhorbani_Blanchimentd'image_ColloqueSpim",
+	"category": {
+		"id": 11,
+		"label": "News & Politics"
+	},
+	"licence": {
+		"id": null,
+		"label": "Unknown"
+	},
+	"language": {
+		"id": "fr",
+		"label": "French"
+	},
+	"privacy": {
+		"id": 1,
+		"label": "Public"
+	},
+	"nsfw": false,
+	"description": "Mégane Ghorbani explique les stratégies de diverses entreprises du secteur agro-industriel pour dissimuler la faible qualité des produits nutritionnels qu’ils commercialisent. Elle détaille notamment les stratégies marketing déployées en direction...",
+	"isLocal": false,
+	"duration": 567,
+	"views": 7,
+	"likes": 0,
+	"dislikes": 0,
+	"thumbnailPath": "/static/thumbnails/9e672bff-0bc5-4021-8a50-7dce52d0edfa.jpg",
+	"previewPath": "/static/previews/9e672bff-0bc5-4021-8a50-7dce52d0edfa.jpg",
+	"embedPath": "/videos/embed/9e672bff-0bc5-4021-8a50-7dce52d0edfa",
+	"createdAt": "2019-05-26T01:47:28.124Z",
+	"updatedAt": "2019-08-11T19:01:01.223Z",
+	"publishedAt": "2019-05-26T01:47:28.124Z",
+	"originallyPublishedAt": null,
+	"account": {
+		"id": 73,
+		"uuid": "8d9efadd-e4f9-46b1-96bc-77566340eac0",
+		"name": "renaudf",
+		"displayName": "renaudf",
+		"url": "https://raptube.antipub.org/accounts/renaudf",
+		"host": "raptube.antipub.org",
+		"avatar": {
+			"path": "/static/avatars/e21f5ffd-0cd9-4318-8dcc-5ac9c4dbee6a.png",
+			"createdAt": "2019-08-16T06:27:31.475Z",
+			"updatedAt": "2019-08-16T06:27:31.475Z"
+		}
+	},
+	"channel": {
+		"id": 28,
+		"uuid": "acbec4e1-8099-42d6-9faa-b203e0d7f9ae",
+		"name": "renaudf_channel",
+		"displayName": "Vidéo SPIM",
+		"url": "https://raptube.antipub.org/video-channels/renaudf_channel",
+		"host": "raptube.antipub.org",
+		"avatar": {
+			"path": "/static/avatars/13c0fac8-d58a-4389-a984-28475a4ba205.png",
+			"createdAt": "2019-08-13T03:01:04.100Z",
+			"updatedAt": "2019-08-13T03:01:04.100Z"
+		}
+	}
+}
+
