@@ -5,9 +5,6 @@ authors = ["Paul Florence <perso@florencepaul.com>"]
 edition = "2018"
 
 [[bin]]
-name="elastic"
-
-[[bin]]
 name="crawler"
 
 [[bin]]

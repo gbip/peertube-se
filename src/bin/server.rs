@@ -2,7 +2,7 @@
 #![feature(decl_macro)]
 
 use elastic::client::SyncClientBuilder;
-use peertube_lib::video::Video;
+use peertube_lib::peertube_api::Video;
 use rocket::http::RawStr;
 use rocket::{get, routes};
 use rocket_contrib::serve::StaticFiles;

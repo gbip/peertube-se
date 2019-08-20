@@ -1,12 +1,12 @@
-use crate::video::Video;
+use crate::peertube_api::Video;
 use elastic::client::requests::common::Doc;
 use elastic::client::requests::{
     DeleteRequestBuilder, GetRequestBuilder, IndexRequestBuilder, UpdateRequestBuilder,
 };
 use elastic::client::{AsyncClientBuilder, Client};
 use elastic::http::sender::AsyncSender;
-use log::warn;
 use futures::future::{ok, Future};
+use log::warn;
 
 type DatabaseSender = AsyncSender;
 type DatabaseClient = Client<DatabaseSender>;
@@ -33,26 +33,26 @@ impl Database {
     pub fn video_is_present(&self, video: &Video) -> GetRequestBuilder<DatabaseSender, Video> {
         self.elastic_client
             .document::<Video>()
-            .get(video.uuid.clone())
+            .get(video.id.clone())
     }
 
     pub fn delete_video(&self, video: &Video) -> DeleteRequestBuilder<DatabaseSender, Video> {
         self.elastic_client
             .document::<Video>()
-            .delete(video.uuid.clone())
+            .delete(video.id.clone())
     }
 
     pub fn update_video(&self, video: &Video) -> UpdateRequestBuilder<DatabaseSender, Doc<Video>> {
         self.elastic_client
             .document::<Video>()
-            .update(video.uuid.clone())
+            .update(video.id.clone())
             .doc(video.clone())
     }
 
     pub fn get_video(&self, video: &Video) -> GetRequestBuilder<DatabaseSender, Video> {
         self.elastic_client
             .document::<Video>()
-            .get(video.uuid.clone())
+            .get(video.id.clone())
     }
 
     pub fn index_video(&self, video: &Video) -> IndexRequestBuilder<DatabaseSender, Video> {
@@ -72,7 +72,7 @@ fn process_video(db: Arc<Database>, video: Arc<Video>) -> impl Future<Item = (),
                 db.index_video(&video_handle)
                     .send()
                     .and_then(|_| ok(()))
-                    .map_err(|e| warn!("{}",e)),
+                    .map_err(|e| warn!("{}", e)),
             );
         });
     Box::new(future)

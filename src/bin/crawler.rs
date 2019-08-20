@@ -27,12 +27,12 @@ use elastic::client::AsyncClientBuilder;
 use elastic::AsyncClient;
 
 use env_logger;
-use peertube_lib::db;
-use peertube_lib::db::process_videos;
-use peertube_lib::db::Database;
-use peertube_lib::instance::InstanceDb;
+use peertube_lib::instance_storage::InstanceDb;
 use peertube_lib::peertube_api::fetch_instance_list_from_joinpeertube;
-use peertube_lib::video::Video;
+use peertube_lib::peertube_api::Video;
+use peertube_lib::video_storage;
+use peertube_lib::video_storage::process_videos;
+use peertube_lib::video_storage::Database;
 
 const URL_TO_TRY: [&str; 2] = ["/server/following", "/server/followers"];
 
@@ -216,23 +216,11 @@ fn fetch(
                 .and_then(move |json| {
                     let mut result = vec![];
                     if let Some(data) = json["data"].as_array() {
-                        for value in data {
-                            let thumbnail_uri = value["thumbnailPath"].to_string();
-                            // Remove extra braces
-                            let thumbnail =
-                                instance_url.clone() + &thumbnail_uri[1..thumbnail_uri.len() - 1];
-                            result.push(Video {
-                                description: value["description"].to_string(),
-                                name: value["name"].to_string(),
-                                uuid: value["uuid"].to_string(),
-                                views: value["views"].as_i64().unwrap_or(0),
-                                likes: value["likes"].as_i64().unwrap_or(0),
-                                duration: value["duration"].as_i64().unwrap_or(0),
-                                created_at: value["createdAt"].to_string(),
-                                creator: value["account"]["name"].to_string() + "@" + &name,
-                                thumbnail,
-                                nsfw: value["nsfw"].as_bool().unwrap_or(false),
-                            });
+                        for value in data.into_iter() {
+                            match serde_json::from_value(value.clone()) {
+                                Ok(video) => result.push(video),
+                                Err(e) => trace!("Failed to parse peertube response : {}", e),
+                            }
                         }
                     }
                     ok(result)
@@ -283,7 +271,7 @@ fn main() {
         info!("No instance found in the database, seeding from https://instances.joinpeertube.org");
         match fetch_instance_list_from_joinpeertube() {
             Ok(res) => {
-                info!("Fetched {} instances",res.len());
+                info!("Fetched {} instances", res.len());
                 for s in res {
                     instances.push(s);
                 }

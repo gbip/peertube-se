@@ -1,5 +1,5 @@
-use rusqlite::{Connection, NO_PARAMS};
 use log::warn;
+use rusqlite::{Connection, NO_PARAMS};
 pub struct InstanceDb {
     conn: Connection,
     new_instance_inserted: u32,
@@ -28,7 +28,7 @@ impl InstanceDb {
             &[instance],
         ) {
             Ok(_) => (),
-            Err(e) => warn!("Failed to insert instance into database : {}",e),
+            Err(e) => warn!("Failed to insert instance into database : {}", e),
         }
     }
 
