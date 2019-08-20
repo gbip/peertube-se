@@ -1,4 +1,7 @@
+use core::fmt;
+use log::info;
 use serde::{Deserialize, Serialize};
+use std::error::Error;
 
 #[derive(Serialize, Deserialize, Debug, Hash)]
 pub struct Avatar {
@@ -105,6 +108,38 @@ peertube_field!(Language, String);
 peertube_field!(Privacy, u64);
 peertube_field!(Licence, u64);
 peertube_field!(State, u64);
+
+#[derive(Debug)]
+struct JoinPeertubeError(&'static str);
+
+impl fmt::Display for JoinPeertubeError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl Error for JoinPeertubeError {}
+
+pub fn fetch_instance_list_from_joinpeertube() -> Result<Vec<String>, Box<dyn Error>> {
+    let mut res =
+        reqwest::get("https://instances.joinpeertube.org/api/v1/instances?start=0&count=100000000")?;
+    let json = res.json::<serde_json::Value>()?;
+    if let Some(data) = json["data"].as_array() {
+        let mut result = vec![];
+        for value in data {
+            let mut host = value["host"].to_string();
+            host.pop();
+            host.remove(0);
+            result.push(host);
+        }
+        info!("Added {} instances to the instance queue", result.len());
+        Ok(result)
+    } else {
+        Err(Box::new(JoinPeertubeError(
+            "https://instances.joinpeertube.org replied with invalid json",
+        )))
+    }
+}
 
 #[cfg(test)]
 mod test {

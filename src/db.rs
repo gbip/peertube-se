@@ -5,7 +5,7 @@ use elastic::client::requests::{
 };
 use elastic::client::{AsyncClientBuilder, Client};
 use elastic::http::sender::AsyncSender;
-
+use log::warn;
 use futures::future::{ok, Future};
 
 type DatabaseSender = AsyncSender;
@@ -72,7 +72,7 @@ fn process_video(db: Arc<Database>, video: Arc<Video>) -> impl Future<Item = (),
                 db.index_video(&video_handle)
                     .send()
                     .and_then(|_| ok(()))
-                    .map_err(|_| ()),
+                    .map_err(|e| warn!("{}",e)),
             );
         });
     Box::new(future)

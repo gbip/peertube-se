@@ -30,7 +30,8 @@ use env_logger;
 use peertube_lib::db;
 use peertube_lib::db::process_videos;
 use peertube_lib::db::Database;
-use peertube_lib::instance::{Instance, InstanceDb};
+use peertube_lib::instance::InstanceDb;
+use peertube_lib::peertube_api::fetch_instance_list_from_joinpeertube;
 use peertube_lib::video::Video;
 
 const URL_TO_TRY: [&str; 2] = ["/server/following", "/server/followers"];
@@ -71,10 +72,7 @@ fn process(
     count: Arc<Mutex<u64>>,
     db: Arc<Mutex<InstanceDb>>,
 ) {
-    db.lock().unwrap().insert_instance(Instance {
-        base_url: item.clone(),
-        blacklisted: false,
-    });
+    db.lock().unwrap().insert_instance(item.clone());
     if !nodes.lock().unwrap().contains(&item) {
         nodes.lock().expect("Poison").insert(item.clone());
         let nodes_clone = nodes.clone();
@@ -106,7 +104,7 @@ fn write_to_file(filename: String, data: Vec<Video>) -> impl Future<Error = ()> 
 }
 
 fn fetch_all(
-    instances: Vec<Instance>,
+    instances: Vec<String>,
     nodes: Arc<Mutex<HashSet<String>>>,
     result: Arc<Mutex<HashSet<APIInstance>>>,
     count: Arc<Mutex<u64>>,
@@ -115,7 +113,7 @@ fn fetch_all(
     let mut futures = vec![];
     for instance in instances {
         let f = fetch(
-            instance.base_url,
+            instance,
             nodes.clone(),
             result.clone(),
             count.clone(),
@@ -140,6 +138,7 @@ fn fetch(
         // Request ressources from host
         let mut tasks = Vec::new();
         let base = "https://".to_owned() + name.clone().as_str() + "/api/v1";
+        trace!("Queryig : {}", base);
         for url in &URL_TO_TRY {
             let count_local = count.clone();
             let instance_local = instance.clone();
@@ -274,10 +273,26 @@ fn main() {
     let count = Arc::new(Mutex::new(0));
 
     let instance_db = Arc::new(Mutex::new(InstanceDb::new()));
-    let instances = instance_db.lock().unwrap().get_all_instances();
-    //work.lock().unwrap().push_back(FIRST.to_string());
+    let mut instances = instance_db.lock().unwrap().get_all_instances();
+
     for instance in &instances {
-        nodes.lock().unwrap().insert(instance.base_url.clone());
+        nodes.lock().unwrap().insert(instance.clone());
+    }
+
+    if nodes.lock().unwrap().len() == 0 {
+        info!("No instance found in the database, seeding from https://instances.joinpeertube.org");
+        match fetch_instance_list_from_joinpeertube() {
+            Ok(res) => {
+                info!("Fetched {} instances",res.len());
+                for s in res {
+                    instances.push(s);
+                }
+            }
+            Err(e) => warn!(
+                "Failed to retrieve instances from https://instances.joinpeertube.org : {}",
+                e
+            ),
+        }
     }
     info!(
         "Starting crawling process from {} instances",

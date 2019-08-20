@@ -1,11 +1,5 @@
 use rusqlite::{Connection, NO_PARAMS};
-
-#[derive(Debug, Hash)]
-pub struct Instance {
-    pub base_url: String,
-    pub blacklisted: bool,
-}
-
+use log::warn;
 pub struct InstanceDb {
     conn: Connection,
     new_instance_inserted: u32,
@@ -17,8 +11,7 @@ impl InstanceDb {
         conn.execute(
             "create table if not exists peertube_instances (
              id integer primary key,
-             base_url text not null unique,
-             blacklisted boolean not null
+             base_url text not null unique
          )",
             NO_PARAMS,
         )
@@ -29,32 +22,27 @@ impl InstanceDb {
         }
     }
 
-    pub fn insert_instance(&mut self, instance: Instance) {
+    pub fn insert_instance(&mut self, instance: String) {
         match self.conn.execute(
-            "insert or ignore into peertube_instances (base_url, blacklisted) values (?1, ?2)",
-            &[instance.base_url, instance.blacklisted.to_string()],
+            "insert or ignore into peertube_instances (base_url) values (?1)",
+            &[instance],
         ) {
             Ok(_) => (),
-            Err(_) => (),
+            Err(e) => warn!("Failed to insert instance into database : {}",e),
         }
     }
 
-    pub fn get_all_instances(&self) -> Vec<Instance> {
+    pub fn get_all_instances(&self) -> Vec<String> {
         let mut stmt = self
             .conn
-            .prepare("select base_url, blacklisted from peertube_instances")
+            .prepare("select base_url from peertube_instances")
             .unwrap();
         let instance_iter = stmt
-            .query_map(NO_PARAMS, |row| {
-                Ok(Instance {
-                    base_url: row.get(0).unwrap(),
-                    blacklisted: false,
-                })
-            })
+            .query_map(NO_PARAMS, |row| Ok(row.get(0).unwrap()))
             .unwrap();
         instance_iter
             .filter_map(Result::ok)
-            .collect::<Vec<Instance>>()
+            .collect::<Vec<String>>()
     }
 
     pub fn get_instance_added(&self) -> u32 {
