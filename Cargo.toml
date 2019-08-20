@@ -26,6 +26,7 @@ rusqlite = "0.20.0"
 log = "0.4.8"
 stderrlog = "0.4.1"
 structopt = "0.2.18"
+robotparser = "0.10.2"
 
 [dependencies.rocket_contrib]
 version = "0.4.2"

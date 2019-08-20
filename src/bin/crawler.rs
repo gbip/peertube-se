@@ -32,8 +32,6 @@ use peertube_lib::video_storage::process_videos;
 use peertube_lib::video_storage::Database;
 use stderrlog;
 
-const URL_TO_TRY: [&str; 2] = ["/server/following", "/server/followers"];
-
 const OUTPUT_DIR: &str = "crawled/";
 
 const LIMIT: u64 = 0;
@@ -63,7 +61,7 @@ impl PartialEq for APIInstance {
 
 impl Eq for APIInstance {}
 
-fn process(
+fn queue_for_crawling(
     item: String,
     nodes: &Arc<Mutex<HashSet<String>>>,
     result: &Arc<Mutex<HashSet<APIInstance>>>,
@@ -101,7 +99,7 @@ fn write_to_file(filename: String, data: Vec<Video>) -> impl Future<Error = ()> 
     open_file
 }
 
-fn fetch_all(
+fn crawl_from_instances(
     instances: Vec<String>,
     nodes: Arc<Mutex<HashSet<String>>>,
     result: Arc<Mutex<HashSet<APIInstance>>>,
@@ -123,6 +121,83 @@ fn fetch_all(
     future.map(|_| ())
 }
 
+fn fetch_video(name: String) {
+    let instance_url = "https://".to_owned() + name.clone().as_str();
+    let query_videos = instance_url.clone() + "/api/v1/videos";
+    let filename = OUTPUT_DIR.to_owned() + &name + ".json";
+    let task = ClientBuilder::new()
+        .timeout(Duration::new(5, 0))
+        .build()
+        .unwrap()
+        .get(&query_videos)
+        .send()
+        .and_then(|mut body| body.json::<serde_json::Value>())
+        .map_err(move |e| trace!("Error while fetching url {} : {}", query_videos.clone(), e))
+        .and_then(move |json| {
+            let mut result = vec![];
+            if let Some(data) = json["data"].as_array() {
+                for value in data.into_iter() {
+                    match serde_json::from_value(value.clone()) {
+                        Ok(video) => result.push(video),
+                        Err(e) => trace!("Failed to parse peertube response : {}", e),
+                    }
+                }
+            }
+            ok(result)
+        })
+        .and_then(|data| {
+            let database = Database::default();
+            process_videos(database, data.clone());
+            write_to_file(filename, data)
+        })
+        .map_err(|_| ())
+        .map(|_| ());
+    tokio::spawn(task);
+}
+
+fn fetch_follow(
+    api_endpoint: &'static str,
+    entry_name: &'static str,
+    instance: Arc<Mutex<APIInstance>>,
+    name: String,
+    nodes: Arc<Mutex<HashSet<String>>>,
+    result: Arc<Mutex<HashSet<APIInstance>>>,
+    count: Arc<Mutex<u64>>,
+    db: Arc<Mutex<InstanceDb>>,
+) -> impl Future<Item = Arc<Mutex<APIInstance>>, Error = ()> {
+    let query = "https://".to_owned() + name.clone().as_str() + "/api/v1" + api_endpoint;
+    let task = ClientBuilder::new()
+        .timeout(Duration::new(5, 0))
+        .build()
+        .unwrap()
+        .get(&query)
+        .send()
+        .and_then(|mut body| body.json::<serde_json::Value>())
+        .map(move |res| {
+            if let Some(data) = res["data"].as_array() {
+                for entry in data {
+                    if let Some(hostname) = entry[entry_name]["host"].as_str() {
+                        if hostname != name {
+                            queue_for_crawling(
+                                hostname.to_string(),
+                                &nodes,
+                                &result,
+                                count.clone(),
+                                db.clone(),
+                            );
+                            instance.lock().unwrap().followers.push(hostname.to_owned());
+                        }
+                    }
+                }
+            }
+            instance
+        })
+        .map_err(move |e| {
+            trace!("Failed to fetch instance : {} ", e);
+        });
+    task
+}
+
 fn fetch(
     name: String,
     nodes: Arc<Mutex<HashSet<String>>>,
@@ -134,117 +209,36 @@ fn fetch(
         trace!("Processing instance : {}", name);
         let instance = Arc::new(Mutex::new(APIInstance::new(name.clone())));
         // Request ressources from host
-        let mut tasks = Vec::new();
-        let base = "https://".to_owned() + name.clone().as_str() + "/api/v1";
-        trace!("Queryig : {}", base);
-        for url in &URL_TO_TRY {
-            let count_local = count.clone();
-            let instance_local = instance.clone();
-            let instance_local2 = instance.clone();
-            let nodes_local = nodes.clone();
-            let result_local = result.clone();
-            let name_local = name.clone();
-            let db_local = db.clone();
-            let query = base.clone() + url;
-            let task = ClientBuilder::new()
-                .timeout(Duration::new(5, 0))
-                .build()
-                .unwrap()
-                .get(&query)
-                .send()
-                .and_then(|mut body| body.json::<serde_json::Value>())
-                .map(move |res| {
-                    if let Some(data) = res["data"].as_array() {
-                        for entry in data {
-                            if let Some(hostname) = entry["follower"]["host"].as_str() {
-                                if hostname != name_local {
-                                    process(
-                                        hostname.to_string(),
-                                        &nodes_local,
-                                        &result_local,
-                                        count_local.clone(),
-                                        db_local.clone(),
-                                    );
-                                    instance_local
-                                        .lock()
-                                        .unwrap()
-                                        .followers
-                                        .push(hostname.to_owned());
-                                }
-                            }
-                            if let Some(hostname) = entry["following"]["host"].as_str() {
-                                if hostname != name_local {
-                                    instance_local
-                                        .lock()
-                                        .unwrap()
-                                        .following
-                                        .push(hostname.to_owned());
-                                    process(
-                                        hostname.to_string(),
-                                        &nodes_local,
-                                        &result_local,
-                                        count_local.clone(),
-                                        db_local.clone(),
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    instance_local2
-                })
-                .map_err(move |e| {
-                    trace!("Failed to fetch instance : {} ", e);
-                });
-            tasks.push(task);
-        }
-        {
-            let instance_url = "https://".to_owned() + name.clone().as_str();
-            let query_videos = instance_url.clone() + "/api/v1/videos";
-            let filename = OUTPUT_DIR.to_owned() + &name + ".json";
-            let task = ClientBuilder::new()
-                .timeout(Duration::new(5, 0))
-                .build()
-                .unwrap()
-                .get(&query_videos)
-                .send()
-                .and_then(|mut body| body.json::<serde_json::Value>())
-                .map_err(move |e| {
-                    trace!("Error while fetching url {} : {}", query_videos.clone(), e)
-                })
-                .and_then(move |json| {
-                    let mut result = vec![];
-                    if let Some(data) = json["data"].as_array() {
-                        for value in data.into_iter() {
-                            match serde_json::from_value(value.clone()) {
-                                Ok(video) => result.push(video),
-                                Err(e) => trace!("Failed to parse peertube response : {}", e),
-                            }
-                        }
-                    }
-                    ok(result)
-                })
-                .and_then(|data| {
-                    let database = Database::default();
-                    process_videos(database, data.clone());
-                    write_to_file(filename, data)
-                })
-                .map_err(|_| ())
-                .map(|_| ());
-            tokio::spawn(task);
-        }
-        let mut iter = tasks.into_iter();
-        let t0 = iter.next();
-        let t1 = iter.next();
-        //let p = tasks.into_iter().fold(lazy(||ok(())), |future, acc| future.join(acc));
-        //let (t0, t1) = (tasks[0], tasks[1]);
+        let t0 = fetch_follow(
+            "/server/following",
+            "following",
+            instance.clone(),
+            name.clone(),
+            nodes.clone(),
+            result.clone(),
+            count.clone(),
+            db.clone(),
+        );
 
-        let f = t0.join(t1).and_then(move |(val, _)| {
-            result
-                .lock()
-                .unwrap()
-                .insert(val.unwrap().lock().unwrap().clone());
-            ok(())
-        });
+        let t1 = fetch_follow(
+            "/server/followers",
+            "followers",
+            instance.clone(),
+            name.clone(),
+            nodes.clone(),
+            result.clone(),
+            count.clone(),
+            db.clone(),
+        );
+
+        fetch_video(name);
+
+        let f = t0
+            .join(t1)
+            .and_then(move |(val, _): (Arc<Mutex<APIInstance>>, _)| {
+                result.lock().unwrap().insert(val.lock().unwrap().clone());
+                ok(())
+            });
         tokio::spawn(f);
         ok(())
     })
@@ -283,7 +277,7 @@ fn crawl() {
         instances.len()
     );
     let start = Instant::now();
-    tokio::run(fetch_all(
+    tokio::run(crawl_from_instances(
         instances,
         nodes.clone(),
         result.clone(),
@@ -305,7 +299,7 @@ fn elastic_is_online() -> bool {
         .expect("Failed to initialize elastic client");
     if let Ok(resp) = client.ping().send() {
         info!(
-            "Elastic search is online. Connected to {}@{}",
+            "Elastic search is online : connected to {}@{}",
             resp.name(),
             resp.cluster_name(),
         );
