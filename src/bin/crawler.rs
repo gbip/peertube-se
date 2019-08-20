@@ -23,9 +23,10 @@ use tokio::prelude::future::lazy;
 use tokio::prelude::future::ok;
 use tokio::prelude::AsyncWrite;
 
-use elastic::client::AsyncClientBuilder;
+use elastic::client::{AsyncClientBuilder, SyncClientBuilder};
 use elastic::AsyncClient;
 
+use elastic::client::responses::PingResponse;
 use env_logger;
 use peertube_lib::instance_storage::InstanceDb;
 use peertube_lib::peertube_api::fetch_instance_list_from_joinpeertube;
@@ -252,9 +253,7 @@ fn fetch(
     })
 }
 
-fn main() {
-    env_logger::init();
-
+fn crawl() {
     // TODO : use SegQueue
     let nodes = Arc::new(Mutex::new(HashSet::new()));
     let result: Arc<Mutex<HashSet<APIInstance>>> = Arc::new(Mutex::new(HashSet::new()));
@@ -297,8 +296,35 @@ fn main() {
     let duration = start.elapsed();
     info!("Found {} instances", nodes.lock().unwrap().len());
     info!(
-        "Added {} instances",
-        instance_db.lock().unwrap().get_instance_added()
+        "Added {} instances in {} seconds",
+        instance_db.lock().unwrap().get_instance_added(),
+        duration.as_secs()
     );
-    info!("In {} sec", duration.as_secs());
+}
+
+fn elastic_is_online() -> bool {
+    let client = SyncClientBuilder::new()
+        .build()
+        .expect("Failed to initialize elastic client");
+    if let Ok(resp) = client.ping().send() {
+        info!(
+            "Elastic search is online. Connected to {}@{}&",
+            resp.name(),
+            resp.cluster_name(),
+        );
+        true
+    } else {
+        false
+    }
+}
+
+fn main() -> Result<(), &'static str> {
+    env_logger::init();
+    if elastic_is_online() {
+        crawl();
+        Ok(())
+    } else {
+        warn!("Failed to connect to elastic instance");
+        Err("error")
+    }
 }

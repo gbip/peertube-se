@@ -1,3 +1,4 @@
+/// This module is used to store videos in the Elastic database
 use crate::peertube_api::Video;
 use elastic::client::requests::common::Doc;
 use elastic::client::requests::{
@@ -12,6 +13,7 @@ type DatabaseSender = AsyncSender;
 type DatabaseClient = Client<DatabaseSender>;
 use std::sync::Arc;
 
+/// An Elastic database that allows to store videos
 pub struct Database {
     elastic_client: DatabaseClient,
 }
