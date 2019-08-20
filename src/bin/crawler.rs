@@ -2,10 +2,6 @@
 use futures::future::join_all;
 use futures::Future;
 use log::*;
-use petgraph::dot::Dot;
-use petgraph::prelude::NodeIndex;
-use petgraph::{Graph, Undirected};
-use petgraph_graphml::GraphMl;
 use reqwest;
 use reqwest::r#async::ClientBuilder;
 use serde::{Deserialize, Serialize};
@@ -18,6 +14,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Write};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use structopt::StructOpt;
 use tokio;
 use tokio::prelude::future::lazy;
 use tokio::prelude::future::ok;
@@ -27,13 +24,13 @@ use elastic::client::{AsyncClientBuilder, SyncClientBuilder};
 use elastic::AsyncClient;
 
 use elastic::client::responses::PingResponse;
-use env_logger;
 use peertube_lib::instance_storage::InstanceDb;
 use peertube_lib::peertube_api::fetch_instance_list_from_joinpeertube;
 use peertube_lib::peertube_api::Video;
 use peertube_lib::video_storage;
 use peertube_lib::video_storage::process_videos;
 use peertube_lib::video_storage::Database;
+use stderrlog;
 
 const URL_TO_TRY: [&str; 2] = ["/server/following", "/server/followers"];
 
@@ -308,7 +305,7 @@ fn elastic_is_online() -> bool {
         .expect("Failed to initialize elastic client");
     if let Ok(resp) = client.ping().send() {
         info!(
-            "Elastic search is online. Connected to {}@{}&",
+            "Elastic search is online. Connected to {}@{}",
             resp.name(),
             resp.cluster_name(),
         );
@@ -318,13 +315,36 @@ fn elastic_is_online() -> bool {
     }
 }
 
-fn main() -> Result<(), &'static str> {
-    env_logger::init();
+#[derive(StructOpt, Debug)]
+#[structopt()]
+struct Opt {
+    /// Silence all output
+    #[structopt(short = "q", long = "quiet")]
+    quiet: bool,
+    /// Verbose mode (-v, -vv, -vvv, etc)
+    #[structopt(short = "v", long = "verbose", parse(from_occurrences))]
+    verbose: usize,
+    /// Timestamp (sec, ms, ns, none)
+    #[structopt(short = "t", long = "timestamp")]
+    ts: Option<stderrlog::Timestamp>,
+}
+
+fn main() -> Result<(), ()> {
+    let opt = Opt::from_args();
+
+    stderrlog::new()
+        .module(module_path!())
+        .quiet(opt.quiet)
+        .verbosity(opt.verbose)
+        .timestamp(opt.ts.unwrap_or(stderrlog::Timestamp::Off))
+        .init()
+        .unwrap();
+
     if elastic_is_online() {
         crawl();
         Ok(())
     } else {
-        warn!("Failed to connect to elastic instance");
-        Err("error")
+        error!("Failed to connect to elastic instance");
+        Err(())
     }
 }
