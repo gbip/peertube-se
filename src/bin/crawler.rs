@@ -1,9 +1,11 @@
 #![allow(unused_imports)]
 use async_std::fs::{File, OpenOptions};
+use async_std::io::prelude::*;
 use async_std::io::{BufReader, BufWriter, Write};
 use async_std::sync::{Arc, Mutex};
-use futures::future::join_all;
+use futures::future::{join3, join_all};
 use futures::Future;
+use isahc::prelude::*;
 use log::*;
 use serde::{Deserialize, Serialize};
 use serde_json;
@@ -14,10 +16,13 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 use structopt::StructOpt;
 
+use futures::executor::block_on;
 use peertube_lib::instance_storage::InstanceDb;
 use peertube_lib::peertube_api::fetch_instance_list_from_joinpeertube;
 use peertube_lib::peertube_api::Video;
 use stderrlog;
+
+type BoxedFuture = Box<dyn Future<Output = ()>>;
 
 const OUTPUT_DIR: &str = "crawled/";
 
@@ -50,11 +55,12 @@ impl Eq for APIInstance {}
 
 async fn queue_for_crawling(
     item: String,
-    nodes: &Arc<Mutex<HashSet<String>>>,
-    result: &Arc<Mutex<HashSet<APIInstance>>>,
+    nodes: Arc<Mutex<HashSet<String>>>,
+    result: Arc<Mutex<HashSet<APIInstance>>>,
     count: Arc<Mutex<u64>>,
     db: Arc<Mutex<InstanceDb>>,
-) {
+    http_client: Arc<HttpClient>,
+) -> BoxedFuture {
     db.lock().await.insert_instance(item.clone());
     if !nodes.lock().await.contains(&item) {
         nodes.lock().await.insert(item.clone());
@@ -62,31 +68,34 @@ async fn queue_for_crawling(
         let result_clone = result.clone();
         if *(count.lock().await) < LIMIT || LIMIT == 0 {
             *(count.lock().await) += 1;
-            //tokio::spawn(fetch(item, nodes_clone, result_clone, count, db));
+            Box::new(fetch(
+                item,
+                nodes_clone,
+                result_clone,
+                count,
+                db,
+                http_client,
+            ))
+        } else {
+            Box::new(async { () })
         }
+    } else {
+        Box::new(async { () })
     }
 }
 
 async fn write_to_file(filename: String, data: Vec<Video>) {
-    /*
-    let open_file = File::create(filename.clone())
-        .map_err(|e| {
-            warn!("Failed to open file {:?}", e);
-            e
-        })
-        .and_then(move |mut file| {
-            let lines: String = data.into_iter().fold("".to_string(), |mut acc, o| {
-                acc += &to_string(&o).unwrap();
-                acc += "\n";
-                acc
-            });
-            file.poll_write(&lines.as_bytes())
-        })
-        .map_err(|e| warn!("Failed to write to file : {:?}", e))
-        .and_then(|_| ok(()));
-    open_file
-    */
-    unimplemented!()
+    if let Ok(file) = File::create(filename.clone()).await {
+        let lines: String = data.into_iter().fold("".to_string(), |mut acc, o| {
+            acc += &to_string(&o).unwrap();
+            acc += "\n";
+            acc
+        });
+        let mut writer = BufWriter::new(file);
+        if let Err(e) = writer.write(&(lines.as_bytes())).await {
+            error!("Error while writing videos to {} : {}", filename, e);
+        }
+    }
 }
 
 async fn crawl_from_instances(
@@ -95,8 +104,8 @@ async fn crawl_from_instances(
     result: Arc<Mutex<HashSet<APIInstance>>>,
     count: Arc<Mutex<u64>>,
     db: Arc<Mutex<InstanceDb>>,
+    http_client: Arc<HttpClient>,
 ) {
-    /*
     let mut futures = vec![];
     for instance in instances {
         let f = fetch(
@@ -105,28 +114,20 @@ async fn crawl_from_instances(
             result.clone(),
             count.clone(),
             db.clone(),
+            http_client.clone(),
         );
         futures.push(f);
     }
-    let future = join_all(futures);
-    future.map(|_| ())
-    */
+    join_all(futures).await;
 }
 
-fn fetch_video(name: String) {
+async fn fetch_video(name: String, http_client: Arc<HttpClient>) {
     let instance_url = "https://".to_owned() + name.clone().as_str();
     let query_videos = instance_url.clone() + "/api/v1/videos?count=50000&start=0&nsfw=true";
     let filename = OUTPUT_DIR.to_owned() + &name + ".json";
-    /*
-    let task = ClientBuilder::new()
-        .timeout(Duration::new(5, 0))
-        .build()
-        .unwrap()
-        .get(&query_videos)
-        .send()
-        .and_then(|mut body| body.json::<serde_json::Value>())
-        .map_err(move |e| trace!("Error while fetching url {} : {}", query_videos.clone(), e))
-        .and_then(move |json| {
+    let request = Request::get(&query_videos).body(()).unwrap();
+    if let Ok(mut req) = http_client.send_async(request).await {
+        if let Ok(json) = req.json::<serde_json::Value>() {
             let mut result = vec![];
             if let Some(data) = json["data"].as_array() {
                 for value in data.into_iter() {
@@ -136,17 +137,11 @@ fn fetch_video(name: String) {
                     }
                 }
             }
-            ok(result)
-        })
-        .and_then(|data| {
-            let database = Database::default();
-            process_videos(database, data.clone());
-            write_to_file(filename, data)
-        })
-        .map_err(|_| ())
-        .map(|_| ());
-    tokio::spawn(task);
-    */
+            /*let database = Database::default();
+            process_videos(database, result);*/
+            write_to_file(filename, result).await;
+        }
+    }
 }
 
 async fn fetch_follow(
@@ -158,41 +153,36 @@ async fn fetch_follow(
     result: Arc<Mutex<HashSet<APIInstance>>>,
     count: Arc<Mutex<u64>>,
     db: Arc<Mutex<InstanceDb>>,
-) -> Arc<Mutex<APIInstance>> {
+    http_client: Arc<HttpClient>,
+) -> BoxedFuture {
     let query = "https://".to_owned() + name.clone().as_str() + "/api/v1" + api_endpoint;
-    /*
-    let task = ClientBuilder::new()
-        .timeout(Duration::new(5, 0))
-        .build()
-        .unwrap()
-        .get(&query)
-        .send()
-        .and_then(|mut body| body.json::<serde_json::Value>())
-        .map(move |res| {
-            if let Some(data) = res["data"].as_array() {
+    let request = Request::get(&query).body(()).unwrap();
+    let mut tasks = Vec::new();
+    if let Ok(mut req) = http_client.send_async(request).await {
+        if let Ok(json) = req.json::<serde_json::Value>() {
+            if let Some(data) = json["data"].as_array() {
                 for entry in data {
                     if let Some(hostname) = entry[entry_name]["host"].as_str() {
                         if hostname != name {
-                            queue_for_crawling(
+                            tasks.push(queue_for_crawling(
                                 hostname.to_string(),
-                                &nodes,
-                                &result,
+                                nodes.clone(),
+                                result.clone(),
                                 count.clone(),
                                 db.clone(),
-                            );
-                            instance.lock().unwrap().followers.push(hostname.to_owned());
+                                http_client.clone(),
+                            ));
+                            instance.lock().await.followers.push(hostname.to_owned());
                         }
                     }
                 }
             }
-            instance
-        })
-        .map_err(move |e| {
-            trace!("Failed to fetch instance : {} ", e);
-        });
-    task
-    */
-    unimplemented!()
+        }
+    }
+    Box::new(async {
+        join_all(tasks).await;
+        ()
+    })
 }
 
 async fn fetch(
@@ -201,46 +191,48 @@ async fn fetch(
     result: Arc<Mutex<HashSet<APIInstance>>>,
     count: Arc<Mutex<u64>>,
     db: Arc<Mutex<InstanceDb>>,
+    http_client: Arc<HttpClient>,
 ) {
-    unimplemented!()
+    trace!("Processing instance : {}", name);
+    let instance = Arc::new(Mutex::new(APIInstance::new(name.clone())));
+    // Request ressources from host
+    let t0 = fetch_follow(
+        "/server/following",
+        "following",
+        instance.clone(),
+        name.clone(),
+        nodes.clone(),
+        result.clone(),
+        count.clone(),
+        db.clone(),
+        http_client.clone(),
+    );
+
+    let t1 = fetch_follow(
+        "/server/followers",
+        "followers",
+        instance.clone(),
+        name.clone(),
+        nodes.clone(),
+        result.clone(),
+        count.clone(),
+        db.clone(),
+        http_client.clone(),
+    );
+
+    let t2 = fetch_video(name, http_client);
+
+    join3(t0, t1, t2).await;
     /*
-    lazy(move || {
-        trace!("Processing instance : {}", name);
-        let instance = Arc::new(Mutex::new(APIInstance::new(name.clone())));
-        // Request ressources from host
-        let t0 = fetch_follow(
-            "/server/following",
-            "following",
-            instance.clone(),
-            name.clone(),
-            nodes.clone(),
-            result.clone(),
-            count.clone(),
-            db.clone(),
-        );
-
-        let t1 = fetch_follow(
-            "/server/followers",
-            "followers",
-            instance.clone(),
-            name.clone(),
-            nodes.clone(),
-            result.clone(),
-            count.clone(),
-            db.clone(),
-        );
-
-        fetch_video(name);
-
-        let f = t0
-            .join(t1)
-            .and_then(move |(val, _): (Arc<Mutex<APIInstance>>, _)| {
-                result.lock().unwrap().insert(val.lock().unwrap().clone());
-                ok(())
-            });
-        tokio::spawn(f);
-        ok(())
-    })
+            let f = t0
+                .join(t1)
+                .and_then(move |(val, _): (Arc<Mutex<APIInstance>>, _)| {
+                    result.lock().unwrap().insert(val.lock().unwrap().clone());
+                    ok(())
+                });
+            tokio::spawn(f);
+            ok(())
+        })
     */
 }
 
@@ -277,14 +269,23 @@ async fn crawl() {
         instances.len()
     );
     let start = Instant::now();
-    /*
-    tokio::run(crawl_from_instances(
+
+    let client = HttpClient::builder()
+        .timeout(Duration::from_secs(5))
+        .connect_timeout(Duration::from_secs(5))
+        .connection_cache_size(4096 * 100_000_000) /* 100 MB cache */
+        .build()
+        .unwrap();
+
+    crawl_from_instances(
         instances,
         nodes.clone(),
         result.clone(),
         count,
         instance_db.clone(),
-    ));*/
+        Arc::new(client),
+    )
+    .await;
     let duration = start.elapsed();
     info!("Found {} instances", nodes.lock().await.len());
     info!(
@@ -338,7 +339,7 @@ fn main() -> Result<(), ()> {
         .unwrap();
 
     if elastic_is_online() {
-        crawl();
+        block_on(crawl());
         Ok(())
     } else {
         error!("Failed to connect to elastic instance");
