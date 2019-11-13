@@ -7,28 +7,28 @@ edition = "2018"
 [[bin]]
 name="crawler"
 
-[[bin]]
-name="server"
+#[[bin]]
+#name="server"
 
 [lib]
 name="peertube_lib"
 
 [dependencies]
-reqwest="0.9.18"
 serde_json = "1.0.39"
-futures = "0.1.27"
-tokio = "0.1.20"
+futures = "0.3"
 serde = "1.0.91"
-elastic = "~0.21.0-pre.5"
-elastic_derive = "~0.21.0-pre.5"
-rocket = "0.4.2"
+#elastic = "~0.21.0-pre.5"
+#elastic_derive = "~0.21.0-pre.5"
+#rocket = "0.4.2"
 rusqlite = "0.20.0"
 log = "0.4.8"
 stderrlog = "0.4.1"
 structopt = "0.2.18"
 robotparser = "0.10.2"
+isahc = {version ="0.7.6", features = ["json"]}
+async-std = "1.0.1"
 
-[dependencies.rocket_contrib]
-version = "0.4.2"
-default-features = false
-features = ["handlebars_templates", "serve"]
+#[dependencies.rocket_contrib]
+#version = "0.4.2"
+#default-features = false
+#features = ["handlebars_templates", "serve"]

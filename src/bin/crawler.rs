@@ -1,35 +1,22 @@
 #![allow(unused_imports)]
+use async_std::fs::{File, OpenOptions};
+use async_std::io::{BufReader, BufWriter, Write};
+use async_std::sync::{Arc, Mutex};
 use futures::future::join_all;
 use futures::Future;
 use log::*;
-use reqwest;
-use reqwest::r#async::ClientBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json;
 use serde_json::to_string_pretty;
 use serde_json::{from_reader, to_string};
 use std::collections::vec_deque::VecDeque;
 use std::collections::{HashMap, HashSet};
-use std::fs::{File, OpenOptions};
-use std::io::{BufReader, BufWriter, Write};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use structopt::StructOpt;
-use tokio;
-use tokio::prelude::future::lazy;
-use tokio::prelude::future::ok;
-use tokio::prelude::AsyncWrite;
 
-use elastic::client::{AsyncClientBuilder, SyncClientBuilder};
-use elastic::AsyncClient;
-
-use elastic::client::responses::PingResponse;
 use peertube_lib::instance_storage::InstanceDb;
 use peertube_lib::peertube_api::fetch_instance_list_from_joinpeertube;
 use peertube_lib::peertube_api::Video;
-use peertube_lib::video_storage;
-use peertube_lib::video_storage::process_videos;
-use peertube_lib::video_storage::Database;
 use stderrlog;
 
 const OUTPUT_DIR: &str = "crawled/";
@@ -61,27 +48,28 @@ impl PartialEq for APIInstance {
 
 impl Eq for APIInstance {}
 
-fn queue_for_crawling(
+async fn queue_for_crawling(
     item: String,
     nodes: &Arc<Mutex<HashSet<String>>>,
     result: &Arc<Mutex<HashSet<APIInstance>>>,
     count: Arc<Mutex<u64>>,
     db: Arc<Mutex<InstanceDb>>,
 ) {
-    db.lock().unwrap().insert_instance(item.clone());
-    if !nodes.lock().unwrap().contains(&item) {
-        nodes.lock().expect("Poison").insert(item.clone());
+    db.lock().await.insert_instance(item.clone());
+    if !nodes.lock().await.contains(&item) {
+        nodes.lock().await.insert(item.clone());
         let nodes_clone = nodes.clone();
         let result_clone = result.clone();
-        if *(count.lock().unwrap()) < LIMIT || LIMIT == 0 {
-            *(count.lock().unwrap()) += 1;
-            tokio::spawn(fetch(item, nodes_clone, result_clone, count, db));
+        if *(count.lock().await) < LIMIT || LIMIT == 0 {
+            *(count.lock().await) += 1;
+            //tokio::spawn(fetch(item, nodes_clone, result_clone, count, db));
         }
     }
 }
 
-fn write_to_file(filename: String, data: Vec<Video>) -> impl Future<Error = ()> {
-    let open_file = tokio::fs::File::create(filename.clone())
+async fn write_to_file(filename: String, data: Vec<Video>) {
+    /*
+    let open_file = File::create(filename.clone())
         .map_err(|e| {
             warn!("Failed to open file {:?}", e);
             e
@@ -97,15 +85,18 @@ fn write_to_file(filename: String, data: Vec<Video>) -> impl Future<Error = ()> 
         .map_err(|e| warn!("Failed to write to file : {:?}", e))
         .and_then(|_| ok(()));
     open_file
+    */
+    unimplemented!()
 }
 
-fn crawl_from_instances(
+async fn crawl_from_instances(
     instances: Vec<String>,
     nodes: Arc<Mutex<HashSet<String>>>,
     result: Arc<Mutex<HashSet<APIInstance>>>,
     count: Arc<Mutex<u64>>,
     db: Arc<Mutex<InstanceDb>>,
-) -> impl Future<Item = (), Error = ()> {
+) {
+    /*
     let mut futures = vec![];
     for instance in instances {
         let f = fetch(
@@ -119,12 +110,14 @@ fn crawl_from_instances(
     }
     let future = join_all(futures);
     future.map(|_| ())
+    */
 }
 
 fn fetch_video(name: String) {
     let instance_url = "https://".to_owned() + name.clone().as_str();
-    let query_videos = instance_url.clone() + "/api/v1/videos";
+    let query_videos = instance_url.clone() + "/api/v1/videos?count=50000&start=0&nsfw=true";
     let filename = OUTPUT_DIR.to_owned() + &name + ".json";
+    /*
     let task = ClientBuilder::new()
         .timeout(Duration::new(5, 0))
         .build()
@@ -153,9 +146,10 @@ fn fetch_video(name: String) {
         .map_err(|_| ())
         .map(|_| ());
     tokio::spawn(task);
+    */
 }
 
-fn fetch_follow(
+async fn fetch_follow(
     api_endpoint: &'static str,
     entry_name: &'static str,
     instance: Arc<Mutex<APIInstance>>,
@@ -164,8 +158,9 @@ fn fetch_follow(
     result: Arc<Mutex<HashSet<APIInstance>>>,
     count: Arc<Mutex<u64>>,
     db: Arc<Mutex<InstanceDb>>,
-) -> impl Future<Item = Arc<Mutex<APIInstance>>, Error = ()> {
+) -> Arc<Mutex<APIInstance>> {
     let query = "https://".to_owned() + name.clone().as_str() + "/api/v1" + api_endpoint;
+    /*
     let task = ClientBuilder::new()
         .timeout(Duration::new(5, 0))
         .build()
@@ -196,15 +191,19 @@ fn fetch_follow(
             trace!("Failed to fetch instance : {} ", e);
         });
     task
+    */
+    unimplemented!()
 }
 
-fn fetch(
+async fn fetch(
     name: String,
     nodes: Arc<Mutex<HashSet<String>>>,
     result: Arc<Mutex<HashSet<APIInstance>>>,
     count: Arc<Mutex<u64>>,
     db: Arc<Mutex<InstanceDb>>,
-) -> impl Future<Item = (), Error = ()> {
+) {
+    unimplemented!()
+    /*
     lazy(move || {
         trace!("Processing instance : {}", name);
         let instance = Arc::new(Mutex::new(APIInstance::new(name.clone())));
@@ -242,22 +241,23 @@ fn fetch(
         tokio::spawn(f);
         ok(())
     })
+    */
 }
 
-fn crawl() {
+async fn crawl() {
     // TODO : use SegQueue
     let nodes = Arc::new(Mutex::new(HashSet::new()));
     let result: Arc<Mutex<HashSet<APIInstance>>> = Arc::new(Mutex::new(HashSet::new()));
     let count = Arc::new(Mutex::new(0));
 
     let instance_db = Arc::new(Mutex::new(InstanceDb::new()));
-    let mut instances = instance_db.lock().unwrap().get_all_instances();
+    let mut instances = instance_db.lock().await.get_all_instances();
 
     for instance in &instances {
-        nodes.lock().unwrap().insert(instance.clone());
+        nodes.lock().await.insert(instance.clone());
     }
 
-    if nodes.lock().unwrap().len() == 0 {
+    if nodes.lock().await.len() == 0 {
         info!("No instance found in the database, seeding from https://instances.joinpeertube.org");
         match fetch_instance_list_from_joinpeertube() {
             Ok(res) => {
@@ -277,23 +277,25 @@ fn crawl() {
         instances.len()
     );
     let start = Instant::now();
+    /*
     tokio::run(crawl_from_instances(
         instances,
         nodes.clone(),
         result.clone(),
         count,
         instance_db.clone(),
-    ));
+    ));*/
     let duration = start.elapsed();
-    info!("Found {} instances", nodes.lock().unwrap().len());
+    info!("Found {} instances", nodes.lock().await.len());
     info!(
         "Added {} instances in {} seconds",
-        instance_db.lock().unwrap().get_instance_added(),
+        instance_db.lock().await.get_instance_added(),
         duration.as_secs()
     );
 }
 
 fn elastic_is_online() -> bool {
+    /*
     let client = SyncClientBuilder::new()
         .build()
         .expect("Failed to initialize elastic client");
@@ -306,7 +308,8 @@ fn elastic_is_online() -> bool {
         true
     } else {
         false
-    }
+    }*/
+    true
 }
 
 #[derive(StructOpt, Debug)]
