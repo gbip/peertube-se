@@ -20,11 +20,14 @@ use futures::executor::block_on;
 use peertube_lib::instance_storage::InstanceDb;
 use peertube_lib::peertube_api::fetch_instance_list_from_joinpeertube;
 use peertube_lib::peertube_api::Video;
+use std::f32::MAX;
 use std::path::Path;
 use stderrlog;
 
-
 const OUTPUT_DIR: &str = "crawled/";
+
+/** Maximum number of videos to fetch from an instance */
+const MAX_VIDEOS: u64 = 100000;
 
 const LIMIT: u64 = 0;
 
@@ -61,8 +64,8 @@ async fn queue_for_crawling(
     db: Arc<Mutex<InstanceDb>>,
     http_client: Arc<HttpClient>,
 ) -> Box<dyn Future<Output = ()>> {
-    let mut res : Box<dyn Future<Output = ()>> = Box::new(async { () });
-        db.lock().await.insert_instance(item.clone());
+    let mut res: Box<dyn Future<Output = ()>> = Box::new(async { () });
+    db.lock().await.insert_instance(item.clone());
     if !nodes.lock().await.contains(&item) {
         nodes.lock().await.insert(item.clone());
         let nodes_clone = nodes.clone();
@@ -80,7 +83,6 @@ async fn queue_for_crawling(
         }
     }
     res
-
 }
 
 async fn write_to_file(filename: String, data: Vec<Video>) {
@@ -124,38 +126,69 @@ async fn crawl_from_instances(
 }
 
 async fn fetch_video(name: String, http_client: Arc<HttpClient>) {
+    let mut videos_to_fetch: u64 = 1;
+    let mut fetched_total: bool = false;
+    let mut index: u64 = 0;
     let instance_url = "https://".to_owned() + name.clone().as_str();
-    let query_videos = instance_url.clone() + "/api/v1/videos?count=50000&start=0&nsfw=true";
     let filename = OUTPUT_DIR.to_owned() + &name + ".json";
-    let request = Request::get(&query_videos).body(()).unwrap();
-    match http_client.send_async(request).await {
-        Ok(mut req) => {
-            match req.json::<serde_json::Value>() {
+    let mut videos: Vec<Video> = vec![];
+    while index < videos_to_fetch {
+        let query_videos = instance_url.clone()
+            + "/api/v1/videos?count="
+            + &MAX_VIDEOS.to_string()
+            + "&filter=local"
+            + "&start="
+            + &index.to_string();
+        let request = Request::get(&query_videos).body(()).unwrap();
+        info!("[{}] GET /videos, start = {}", name, index);
+        match http_client.send_async(request).await {
+            Ok(mut resp) => match resp.json::<serde_json::Value>() {
                 Ok(json) => {
-                    let mut result = vec![];
                     if let Some(data) = json["data"].as_array() {
+                        index += data.len() as u64;
+                        if let Some(total) = json["total"].as_u64() {
+                            if !fetched_total {
+                                videos_to_fetch = total;
+                                fetched_total = true;
+                                println!("Need to fetch {} videos", videos_to_fetch)
+                            }
+                        }
                         for value in data.into_iter() {
                             match serde_json::from_value(value.clone()) {
-                                Ok(video) => result.push(video),
+                                Ok(video) => videos.push(video),
                                 Err(e) => {
-                                    error!("Failed to parse peertube response from {}: {}", name, e)
+                                    trace!(
+                                        "Failed to parse peertube response from {}: {}",
+                                        name,
+                                        e
+                                    );
                                 }
                             }
                         }
+                    } else {
+                        break;
                     }
                     /*let database = Database::default();
                     process_videos(database, result);*/
-                    write_to_file(filename, result).await;
                 }
-                Err(e) => warn!(
-                    "Invalid json from {} : {} \nJson : \n{}\n----\n",
-                    name,
-                    e,
-                    req.text().unwrap_or("Invalid body".to_string())
-                ),
+                Err(e) => {
+                    trace!(
+                        "Invalid json from {} : {} \nJson : \n{}\n----\n",
+                        name,
+                        e,
+                        resp.text().unwrap_or("Invalid body".to_string())
+                    );
+                    break;
+                }
+            },
+            Err(e) => {
+                trace!("Failed to fetch videos from {} : {}", query_videos, e);
+                break;
             }
         }
-        Err(e) => warn!("Failed to fetch videos from {} : {}", query_videos, e),
+    }
+    if videos.len() > 0 {
+        write_to_file(filename, videos).await;
     }
 }
 
@@ -170,7 +203,8 @@ async fn fetch_follow(
     db: Arc<Mutex<InstanceDb>>,
     http_client: Arc<HttpClient>,
 ) {
-    let query = "https://".to_owned() + name.clone().as_str() + "/api/v1" + api_endpoint;
+    let query =
+        "https://".to_owned() + name.clone().as_str() + "/api/v1" + api_endpoint + "?count=10000";
     let request = Request::get(&query).body(()).unwrap();
     let mut tasks = Vec::new();
     match http_client.send_async(request).await {
@@ -180,7 +214,6 @@ async fn fetch_follow(
                     for entry in data {
                         if let Some(hostname) = entry[entry_name]["host"].as_str() {
                             if hostname != name {
-                                info!("Scheduling {}", hostname.to_string());
                                 tasks.push(queue_for_crawling(
                                     hostname.to_string(),
                                     nodes.clone(),
@@ -198,7 +231,7 @@ async fn fetch_follow(
             },
             Err(_e) => (),
         },
-        Err(e) => warn!("Failed to fetch followers from {} : {}", query, e),
+        Err(e) => trace!("Failed to fetch followers from {} : {}", query, e),
     }
     join_all(tasks).await;
 }
@@ -314,7 +347,7 @@ async fn crawl() {
     info!("Found {} instances", nodes.lock().await.len());
     info!(
         "Added {} instances in {} seconds",
-        instance_db.lock().await.get_instance_added(),
+        (*nodes.lock().await).len(),
         duration.as_secs()
     );
 }
