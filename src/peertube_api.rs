@@ -16,7 +16,7 @@ pub struct Avatar {
 
 #[derive(Serialize, Deserialize, Debug, Hash, Clone)]
 pub struct Instance {
-    pub id: u64,
+    pub id: Option<u64>,
     pub uuid: String,
     pub url: String,
     pub name: String,
@@ -28,12 +28,12 @@ pub struct Instance {
     pub created_at: String,
     #[serde(rename(serialize = "updatedAt", deserialize = "updatedAt"))]
     pub updated_at: String,
-    pub avatar: Avatar,
+    pub avatar: Option<Avatar>,
 }
 #[derive(Serialize, Deserialize, Debug, Hash, Clone)]
 pub struct Video {
     //#[elastic(id(expr = "id.to_string()"))]
-    pub id: i64, // Should be i64
+    pub id: Option<i64>, // Should be i64
     #[serde(rename(serialize = "createdAt", deserialize = "createdAt"))]
     pub created_at: String,
     #[serde(rename(serialize = "publishedAt", deserialize = "publishedAt"))]
@@ -49,7 +49,7 @@ pub struct Video {
     pub licence: Licence,
     pub language: Language,
     pub privacy: Privacy,
-    pub description: String,
+    pub description: Option<String>,
     pub duration: i64, /* Should be u64 */
     #[serde(rename(serialize = "isLocal", deserialize = "isLocal"))]
     pub is_local: bool,
@@ -75,24 +75,24 @@ pub struct Video {
 
 #[derive(Serialize, Deserialize, Debug, Hash, Clone)]
 pub struct Account {
-    pub id: i64,
+    pub id: Option<i64>,
     pub name: String,
     #[serde(rename(serialize = "displayName", deserialize = "displayName"))]
     pub display_name: String,
     pub url: String,
     pub host: String,
-    pub avatar: Avatar,
+    pub avatar: Option<Avatar>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Hash, Clone)]
 pub struct Channel {
-    pub id: i64,
+    pub id: Option<i64>,
     pub name: String,
     #[serde(rename(serialize = "displayName", deserialize = "displayName"))]
     pub display_name: String,
     pub url: String,
     pub host: String,
-    pub avatar: Avatar,
+    pub avatar: Option<Avatar>,
 }
 
 macro_rules! peertube_field {

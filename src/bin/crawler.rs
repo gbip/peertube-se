@@ -4,7 +4,7 @@ use async_std::io::prelude::*;
 use async_std::io::{BufReader, BufWriter, Write};
 use async_std::sync::{Arc, Mutex};
 use futures::future::{join3, join_all};
-use futures::Future;
+use futures::{Future, FutureExt};
 use isahc::prelude::*;
 use log::*;
 use serde::{Deserialize, Serialize};
@@ -20,9 +20,9 @@ use futures::executor::block_on;
 use peertube_lib::instance_storage::InstanceDb;
 use peertube_lib::peertube_api::fetch_instance_list_from_joinpeertube;
 use peertube_lib::peertube_api::Video;
+use std::path::Path;
 use stderrlog;
 
-type BoxedFuture = Box<dyn Future<Output = ()>>;
 
 const OUTPUT_DIR: &str = "crawled/";
 
@@ -60,41 +60,43 @@ async fn queue_for_crawling(
     count: Arc<Mutex<u64>>,
     db: Arc<Mutex<InstanceDb>>,
     http_client: Arc<HttpClient>,
-) -> BoxedFuture {
-    db.lock().await.insert_instance(item.clone());
+) -> Box<dyn Future<Output = ()>> {
+    let mut res : Box<dyn Future<Output = ()>> = Box::new(async { () });
+        db.lock().await.insert_instance(item.clone());
     if !nodes.lock().await.contains(&item) {
         nodes.lock().await.insert(item.clone());
         let nodes_clone = nodes.clone();
         let result_clone = result.clone();
         if *(count.lock().await) < LIMIT || LIMIT == 0 {
             *(count.lock().await) += 1;
-            Box::new(fetch(
+            res = Box::new(fetch(
                 item,
                 nodes_clone,
                 result_clone,
                 count,
                 db,
                 http_client,
-            ))
-        } else {
-            Box::new(async { () })
+            ));
         }
-    } else {
-        Box::new(async { () })
     }
+    res
+
 }
 
 async fn write_to_file(filename: String, data: Vec<Video>) {
-    if let Ok(file) = File::create(filename.clone()).await {
-        let lines: String = data.into_iter().fold("".to_string(), |mut acc, o| {
-            acc += &to_string(&o).unwrap();
-            acc += "\n";
-            acc
-        });
-        let mut writer = BufWriter::new(file);
-        if let Err(e) = writer.write(&(lines.as_bytes())).await {
-            error!("Error while writing videos to {} : {}", filename, e);
+    match File::create(filename.clone()).await {
+        Ok(file) => {
+            let lines: String = data.into_iter().fold("".to_string(), |mut acc, o| {
+                acc += &to_string(&o).unwrap();
+                acc += "\n";
+                acc
+            });
+            let mut writer = BufWriter::new(file);
+            if let Err(e) = writer.write(&(lines.as_bytes())).await {
+                error!("Error while writing videos to {} : {}", filename, e);
+            }
         }
+        Err(e) => error!("{}", e),
     }
 }
 
@@ -126,21 +128,34 @@ async fn fetch_video(name: String, http_client: Arc<HttpClient>) {
     let query_videos = instance_url.clone() + "/api/v1/videos?count=50000&start=0&nsfw=true";
     let filename = OUTPUT_DIR.to_owned() + &name + ".json";
     let request = Request::get(&query_videos).body(()).unwrap();
-    if let Ok(mut req) = http_client.send_async(request).await {
-        if let Ok(json) = req.json::<serde_json::Value>() {
-            let mut result = vec![];
-            if let Some(data) = json["data"].as_array() {
-                for value in data.into_iter() {
-                    match serde_json::from_value(value.clone()) {
-                        Ok(video) => result.push(video),
-                        Err(e) => trace!("Failed to parse peertube response : {}", e),
+    match http_client.send_async(request).await {
+        Ok(mut req) => {
+            match req.json::<serde_json::Value>() {
+                Ok(json) => {
+                    let mut result = vec![];
+                    if let Some(data) = json["data"].as_array() {
+                        for value in data.into_iter() {
+                            match serde_json::from_value(value.clone()) {
+                                Ok(video) => result.push(video),
+                                Err(e) => {
+                                    error!("Failed to parse peertube response from {}: {}", name, e)
+                                }
+                            }
+                        }
                     }
+                    /*let database = Database::default();
+                    process_videos(database, result);*/
+                    write_to_file(filename, result).await;
                 }
+                Err(e) => warn!(
+                    "Invalid json from {} : {} \nJson : \n{}\n----\n",
+                    name,
+                    e,
+                    req.text().unwrap_or("Invalid body".to_string())
+                ),
             }
-            /*let database = Database::default();
-            process_videos(database, result);*/
-            write_to_file(filename, result).await;
         }
+        Err(e) => warn!("Failed to fetch videos from {} : {}", query_videos, e),
     }
 }
 
@@ -154,35 +169,38 @@ async fn fetch_follow(
     count: Arc<Mutex<u64>>,
     db: Arc<Mutex<InstanceDb>>,
     http_client: Arc<HttpClient>,
-) -> BoxedFuture {
+) {
     let query = "https://".to_owned() + name.clone().as_str() + "/api/v1" + api_endpoint;
     let request = Request::get(&query).body(()).unwrap();
     let mut tasks = Vec::new();
-    if let Ok(mut req) = http_client.send_async(request).await {
-        if let Ok(json) = req.json::<serde_json::Value>() {
-            if let Some(data) = json["data"].as_array() {
-                for entry in data {
-                    if let Some(hostname) = entry[entry_name]["host"].as_str() {
-                        if hostname != name {
-                            tasks.push(queue_for_crawling(
-                                hostname.to_string(),
-                                nodes.clone(),
-                                result.clone(),
-                                count.clone(),
-                                db.clone(),
-                                http_client.clone(),
-                            ));
-                            instance.lock().await.followers.push(hostname.to_owned());
+    match http_client.send_async(request).await {
+        Ok(mut req) => match req.json::<serde_json::Value>() {
+            Ok(json) => match json["data"].as_array() {
+                Some(data) => {
+                    for entry in data {
+                        if let Some(hostname) = entry[entry_name]["host"].as_str() {
+                            if hostname != name {
+                                info!("Scheduling {}", hostname.to_string());
+                                tasks.push(queue_for_crawling(
+                                    hostname.to_string(),
+                                    nodes.clone(),
+                                    result.clone(),
+                                    count.clone(),
+                                    db.clone(),
+                                    http_client.clone(),
+                                ));
+                                instance.lock().await.followers.push(hostname.to_owned());
+                            }
                         }
                     }
                 }
-            }
-        }
+                None => (),
+            },
+            Err(_e) => (),
+        },
+        Err(e) => warn!("Failed to fetch followers from {} : {}", query, e),
     }
-    Box::new(async {
-        join_all(tasks).await;
-        ()
-    })
+    join_all(tasks).await;
 }
 
 async fn fetch(
@@ -193,7 +211,6 @@ async fn fetch(
     db: Arc<Mutex<InstanceDb>>,
     http_client: Arc<HttpClient>,
 ) {
-    trace!("Processing instance : {}", name);
     let instance = Arc::new(Mutex::new(APIInstance::new(name.clone())));
     // Request ressources from host
     let t0 = fetch_follow(
@@ -236,11 +253,18 @@ async fn fetch(
     */
 }
 
+fn create_output_folder() {
+    if !Path::new("./crawled").exists() {
+        std::fs::create_dir("./crawled").expect("Failed to create output dir");
+    }
+}
+
 async fn crawl() {
     // TODO : use SegQueue
     let nodes = Arc::new(Mutex::new(HashSet::new()));
     let result: Arc<Mutex<HashSet<APIInstance>>> = Arc::new(Mutex::new(HashSet::new()));
     let count = Arc::new(Mutex::new(0));
+    create_output_folder();
 
     let instance_db = Arc::new(Mutex::new(InstanceDb::new()));
     let mut instances = instance_db.lock().await.get_all_instances();
@@ -271,8 +295,8 @@ async fn crawl() {
     let start = Instant::now();
 
     let client = HttpClient::builder()
-        .timeout(Duration::from_secs(5))
-        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(25))
+        .connect_timeout(Duration::from_secs(25))
         .connection_cache_size(4096 * 100_000_000) /* 100 MB cache */
         .build()
         .unwrap();
