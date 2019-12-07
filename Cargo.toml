@@ -27,6 +27,7 @@ structopt = "0.2.18"
 robotparser = "0.10.2"
 isahc = {version ="0.7.6", features = ["json"]}
 async-std = "1.0.1"
+pbr = "1.0"
 
 #[dependencies.rocket_contrib]
 #version = "0.4.2"

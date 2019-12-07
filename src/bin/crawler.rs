@@ -203,35 +203,71 @@ async fn fetch_follow(
     db: Arc<Mutex<InstanceDb>>,
     http_client: Arc<HttpClient>,
 ) {
-    let query =
-        "https://".to_owned() + name.clone().as_str() + "/api/v1" + api_endpoint + "?count=10000";
-    let request = Request::get(&query).body(()).unwrap();
     let mut tasks = Vec::new();
-    match http_client.send_async(request).await {
-        Ok(mut req) => match req.json::<serde_json::Value>() {
-            Ok(json) => match json["data"].as_array() {
-                Some(data) => {
-                    for entry in data {
-                        if let Some(hostname) = entry[entry_name]["host"].as_str() {
-                            if hostname != name {
-                                tasks.push(queue_for_crawling(
-                                    hostname.to_string(),
-                                    nodes.clone(),
-                                    result.clone(),
-                                    count.clone(),
-                                    db.clone(),
-                                    http_client.clone(),
-                                ));
-                                instance.lock().await.followers.push(hostname.to_owned());
-                            }
+    let mut followers_to_fetch: u64 = 1;
+    let mut index: u64 = 0;
+    let mut fetched_total: bool = false;
+    while index < followers_to_fetch {
+        let query = "https://".to_owned()
+            + name.clone().as_str()
+            + "/api/v1"
+            + api_endpoint
+            + "?count=10000"
+            + "&start="
+            + &index.to_string();
+        let request = Request::get(&query).body(()).unwrap();
+        info!(
+            "[{}] GET /{}, start = {}/{}",
+            api_endpoint,
+            name,
+            index,
+            if fetched_total {
+                followers_to_fetch.to_string()
+            } else {
+                "?".to_string()
+            }
+        );
+        match http_client.send_async(request).await {
+            Ok(mut req) => match req.json::<serde_json::Value>() {
+                Ok(json) => {
+                    if let Some(total) = json["total"].as_u64() {
+                        if !fetched_total {
+                            followers_to_fetch = total;
+                            fetched_total = true;
+                        }
+                    } else {
+                        if !fetched_total {
+                            followers_to_fetch = 0;
+                            fetched_total = true;
                         }
                     }
+
+                    match json["data"].as_array() {
+                        Some(data) => {
+                            index += data.len() as u64;
+                            for entry in data {
+                                if let Some(hostname) = entry[entry_name]["host"].as_str() {
+                                    if hostname != name {
+                                        tasks.push(queue_for_crawling(
+                                            hostname.to_string(),
+                                            nodes.clone(),
+                                            result.clone(),
+                                            count.clone(),
+                                            db.clone(),
+                                            http_client.clone(),
+                                        ));
+                                        instance.lock().await.followers.push(hostname.to_owned());
+                                    }
+                                }
+                            }
+                        }
+                        None => (),
+                    }
                 }
-                None => (),
+                Err(_e) => (),
             },
-            Err(_e) => (),
-        },
-        Err(e) => trace!("Failed to fetch followers from {} : {}", query, e),
+            Err(e) => trace!("Failed to fetch followers from {} : {}", query, e),
+        }
     }
     join_all(tasks).await;
 }
