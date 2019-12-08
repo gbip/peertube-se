@@ -66,8 +66,8 @@ async fn queue_for_crawling(
     count: Arc<Mutex<u64>>,
     db: Arc<Mutex<InstanceDb>>,
     http_client: Arc<HttpClient>,
-    bars: Arc<MultiProgress>,
     instance_bar: ProgressBar,
+    video_bar: ProgressBar,
 ) -> Box<dyn Future<Output = ()>> {
     let mut res: Box<dyn Future<Output = ()>> = Box::new(async { () });
     db.lock().await.insert_instance(item.clone());
@@ -85,8 +85,8 @@ async fn queue_for_crawling(
                 count,
                 db,
                 http_client,
-                bars,
                 instance_bar.clone(),
+                video_bar.clone(),
             ));
         }
     }
@@ -117,8 +117,8 @@ async fn crawl_from_instances(
     count: Arc<Mutex<u64>>,
     db: Arc<Mutex<InstanceDb>>,
     http_client: Arc<HttpClient>,
-    bars: Arc<MultiProgress>,
     instance_bar: ProgressBar,
+    video_bar: ProgressBar,
 ) {
     let mut futures = vec![];
     for instance in instances {
@@ -129,15 +129,15 @@ async fn crawl_from_instances(
             count.clone(),
             db.clone(),
             http_client.clone(),
-            bars.clone(),
             instance_bar.clone(),
+            video_bar.clone(),
         );
         futures.push(f);
     }
     join_all(futures).await;
 }
 
-async fn fetch_video(name: String, http_client: Arc<HttpClient>, bar: ProgressBar) {
+async fn fetch_video(name: String, http_client: Arc<HttpClient>, video_bar: ProgressBar) {
     let mut videos_to_fetch: u64 = 1;
     let mut fetched_total: bool = false;
     let mut index: u64 = 0;
@@ -151,6 +151,7 @@ async fn fetch_video(name: String, http_client: Arc<HttpClient>, bar: ProgressBa
             + "&filter=local"
             + "&start="
             + &index.to_string();
+        video_bar.tick();
         let request = Request::get(&query_videos).body(()).unwrap();
         info!("[{}] GET /videos, start = {}", name, index);
         match http_client.send_async(request).await {
@@ -162,10 +163,10 @@ async fn fetch_video(name: String, http_client: Arc<HttpClient>, bar: ProgressBa
                             if !fetched_total {
                                 videos_to_fetch = total;
                                 fetched_total = true;
-                                bar.inc_length(videos_to_fetch);
+                                video_bar.inc_length(videos_to_fetch);
                             }
                         }
-                        bar.inc(data.len() as u64);
+                        video_bar.inc(data.len() as u64);
                         for value in data.into_iter() {
                             match serde_json::from_value(value.clone()) {
                                 Ok(video) => videos.push(video),
@@ -200,7 +201,6 @@ async fn fetch_video(name: String, http_client: Arc<HttpClient>, bar: ProgressBa
             }
         }
     }
-    bar.finish_and_clear();
     if videos.len() > 0 {
         write_to_file(filename, videos).await;
     }
@@ -216,9 +216,8 @@ async fn fetch_follow(
     count: Arc<Mutex<u64>>,
     db: Arc<Mutex<InstanceDb>>,
     http_client: Arc<HttpClient>,
-    bar: ProgressBar,
-    bars: Arc<MultiProgress>,
     instance_bar: ProgressBar,
+    video_bar: ProgressBar,
 ) {
     let mut tasks = Vec::new();
     let mut followers_to_fetch: u64 = 1;
@@ -232,6 +231,7 @@ async fn fetch_follow(
             + "?count=10000"
             + "&start="
             + &index.to_string();
+        instance_bar.tick();
         let request = Request::get(&query).body(()).unwrap();
         info!(
             "[{}] GET /{}, start = {}/{}",
@@ -251,7 +251,7 @@ async fn fetch_follow(
                         if !fetched_total {
                             followers_to_fetch = total;
                             fetched_total = true;
-                            bar.inc_length(total);
+                            instance_bar.inc_length(total);
                         }
                     } else {
                         if !fetched_total {
@@ -263,7 +263,7 @@ async fn fetch_follow(
                     match json["data"].as_array() {
                         Some(data) => {
                             index += data.len() as u64;
-                            bar.inc(data.len() as u64);
+                            instance_bar.inc(data.len() as u64);
                             for entry in data {
                                 if let Some(hostname) = entry[entry_name]["host"].as_str() {
                                     if hostname != name {
@@ -274,8 +274,8 @@ async fn fetch_follow(
                                             count.clone(),
                                             db.clone(),
                                             http_client.clone(),
-                                            bars.clone(),
                                             instance_bar.clone(),
+                                            video_bar.clone(),
                                         ));
                                         instance.lock().await.followers.push(hostname.to_owned());
                                     }
@@ -290,7 +290,6 @@ async fn fetch_follow(
             Err(e) => trace!("Failed to fetch followers from {} : {}", query, e),
         }
     }
-    bar.finish_and_clear();
     join_all(tasks).await;
 }
 
@@ -301,15 +300,10 @@ async fn fetch(
     count: Arc<Mutex<u64>>,
     db: Arc<Mutex<InstanceDb>>,
     http_client: Arc<HttpClient>,
-    bars: Arc<MultiProgress>,
     instance_bar: ProgressBar,
+    video_bar: ProgressBar,
 ) {
     let instance = Arc::new(Mutex::new(APIInstance::new(name.clone())));
-    let bar = {
-        //let b = bars.add(ProgressBar::hidden());
-        //b.set_message(&name);
-        ProgressBar::hidden()
-    };
 
     // Request ressources from host
     let t0 = fetch_follow(
@@ -322,9 +316,8 @@ async fn fetch(
         count.clone(),
         db.clone(),
         http_client.clone(),
-        bar.clone(),
-        bars.clone(),
         instance_bar.clone(),
+        video_bar.clone(),
     );
 
     let t1 = fetch_follow(
@@ -337,12 +330,11 @@ async fn fetch(
         count.clone(),
         db.clone(),
         http_client.clone(),
-        bar.clone(),
-        bars,
         instance_bar.clone(),
+        video_bar.clone(),
     );
 
-    let t2 = fetch_video(name, http_client, bar);
+    let t2 = fetch_video(name, http_client, video_bar);
 
     join3(t0, t1, t2).await;
     instance_bar.inc(1);
@@ -376,12 +368,17 @@ async fn crawl() {
     let count = Arc::new(Mutex::new(0));
     create_output_folder();
     let mb = Arc::new(MultiProgress::new());
-    let p = mb.add(ProgressBar::new(10));
-    p.set_prefix("Fetching instances :");
+    let instance_bar = mb.add(ProgressBar::new(0));
+    let video_bar = mb.add(ProgressBar::new(0));
+    video_bar.set_prefix("Fetching videos :");
+    instance_bar.set_prefix("Fetching neighbours :");
     let sty = ProgressStyle::default_bar()
-        .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
+        .template("{prefix} [{wide_bar:.cyan/blue}] {per_sec} {pos:>7}/{len:7}({percent}%) {eta} remaining")
         .progress_chars("=>-");
-    p.set_style(sty.clone());
+    instance_bar.set_style(sty.clone());
+    video_bar.set_style(sty.clone());
+    video_bar.tick();
+    instance_bar.tick();
     let mb_clone = mb.clone();
     let instance_db = Arc::new(Mutex::new(InstanceDb::new()));
     let mut instances = instance_db.lock().await.get_all_instances();
@@ -389,14 +386,14 @@ async fn crawl() {
     for instance in &instances {
         nodes.lock().await.insert(instance.clone());
     }
-    p.set_length(instances.len().try_into().unwrap());
-    p.println(format!("Loaded {} instances", instances.len()));
+    instance_bar.set_length(instances.len().try_into().unwrap());
+    instance_bar.println(format!("Loaded {} instances", instances.len()));
     if nodes.lock().await.len() == 0 {
         info!("No instance found in the database, seeding from https://instances.joinpeertube.org");
         match fetch_instance_list_from_joinpeertube() {
             Ok(res) => {
-                p.set_length(res.len().try_into().unwrap());
-                p.println(format!("Fetched {} instances", res.len()));
+                instance_bar.set_length(res.len().try_into().unwrap());
+                instance_bar.println(format!("Fetched {} instances", res.len()));
                 for s in res {
                     instances.push(s);
                 }
@@ -431,11 +428,12 @@ async fn crawl() {
         count,
         instance_db.clone(),
         Arc::new(client),
-        mb.clone(),
-        p.clone(),
+        instance_bar.clone(),
+        video_bar.clone(),
     )
     .await;
-    p.finish_with_message(&format!("Found {} instances", nodes.lock().await.len()));
+    instance_bar.finish_with_message(&format!("Found {} instances", nodes.lock().await.len()));
+    video_bar.finish_with_message(&format!("Fetched all videos"));
     let duration = start.elapsed();
     info!(
         "Added {} instances in {} seconds",
