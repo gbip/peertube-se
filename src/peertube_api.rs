@@ -34,6 +34,7 @@ pub struct Instance {
 pub struct Video {
     //#[elastic(id(expr = "id.to_string()"))]
     pub id: Option<i64>, // Should be i64
+    pub uuid: String,
     #[serde(rename(serialize = "createdAt", deserialize = "createdAt"))]
     pub created_at: String,
     #[serde(rename(serialize = "publishedAt", deserialize = "publishedAt"))]
@@ -71,6 +72,7 @@ pub struct Video {
     pub blacklisted_reason: Option<String>,
     pub account: Account,
     pub channel: Channel,
+    pub name: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Hash, Clone)]
