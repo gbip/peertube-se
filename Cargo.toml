@@ -25,11 +25,11 @@ serde = "1.0.91"
 #rocket = "0.4.2"
 rusqlite = "0.20.0"
 log = "0.4.8"
-stderrlog = "0.4.1"
+stderrlog = "0.4.3"
 structopt = "0.2.18"
 robotparser = "0.10.2"
 isahc = {version ="0.7.6", features = ["json"]}
-async-std = "1.0.1"
+async-std = "1.5"
 indicatif = "0.13.0"
 
 #[dependencies.rocket_contrib]

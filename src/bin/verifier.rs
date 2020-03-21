@@ -18,7 +18,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let buffer = BufReader::new(input);
             let mut count = 0;
             for line in buffer.lines() {
-                count+=1;
+                count += 1;
                 let video: Video = serde_json::from_str(&line?)?;
                 if data.contains_key(&video.uuid) {
                     let v = data.get(&video.uuid).unwrap();
@@ -38,7 +38,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
             }
             total += count;
-            println!("Inspected {} videos",count)
+            println!("Inspected {} videos", count)
         }
     }
     println!("There are {} videos in the BDD", total);

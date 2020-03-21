@@ -21,18 +21,20 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use peertube_lib::instance_storage::InstanceDb;
 use peertube_lib::peertube_api::fetch_instance_list_from_joinpeertube;
 use peertube_lib::peertube_api::Video;
+use std::cmp::min;
 use std::convert::TryInto;
 use std::f32::MAX;
 use std::io::Stdout;
 use std::path::Path;
 use stderrlog;
+use stderrlog::ColorChoice;
 
 const OUTPUT_DIR: &str = "crawled/";
 
 /** Maximum number of videos to fetch from an instance */
-const MAX_VIDEOS: u64 = 100000;
+const MAX_VIDEOS: u64 = 100;
 
-const LIMIT: u64 = 0;
+const LIMIT: u64 = 10;
 
 #[derive(Debug, Hash, Clone, Serialize, Deserialize)]
 struct APIInstance {
@@ -75,20 +77,26 @@ async fn queue_for_crawling(
         nodes.lock().await.insert(item.clone());
         let nodes_clone = nodes.clone();
         let result_clone = result.clone();
-        if *(count.lock().await) < LIMIT || LIMIT == 0 {
-            *(count.lock().await) += 1;
+        let mut count_val = count.lock().await;
+        if *count_val < LIMIT || LIMIT == 0 {
+            *count_val += 1;
             instance_bar.inc_length(1);
+            trace!("[{}] Scheduled", item);
             res = Box::new(fetch(
                 item,
                 nodes_clone,
                 result_clone,
-                count,
+                count.clone(),
                 db,
                 http_client,
                 instance_bar.clone(),
                 video_bar.clone(),
             ));
+        } else {
+            warn!("[{}] Skipped : reached maximum depth", item);
         }
+    } else {
+        trace!("[{}] Skipped: already in queue", item);
     }
     res
 }
@@ -122,7 +130,8 @@ async fn crawl_from_instances(
 ) {
     let mut futures = vec![];
     for instance in instances {
-        let f = fetch(
+        //let f =
+        async_std::task::spawn(fetch(
             instance,
             nodes.clone(),
             result.clone(),
@@ -131,10 +140,10 @@ async fn crawl_from_instances(
             http_client.clone(),
             instance_bar.clone(),
             video_bar.clone(),
-        );
-        futures.push(f);
+        ));
+        //futures.push(f);
     }
-    join_all(futures).await;
+    //join_all(futures).await;
 }
 
 async fn fetch_video(name: String, http_client: Arc<HttpClient>, video_bar: ProgressBar) {
@@ -153,12 +162,16 @@ async fn fetch_video(name: String, http_client: Arc<HttpClient>, video_bar: Prog
             + &index.to_string();
         video_bar.tick();
         let request = Request::get(&query_videos).body(()).unwrap();
-        info!("[{}] GET /videos, start = {}", name, index);
+        info!(
+            "[{}][{}] GET \"{}\", [{}]",
+            name, query_videos, "/videos/", index
+        );
         match http_client.send_async(request).await {
             Ok(mut resp) => match resp.json::<serde_json::Value>() {
                 Ok(json) => {
                     if let Some(data) = json["data"].as_array() {
                         index += data.len() as u64;
+                        trace!("[{}][{}] Received {} objects", name, "/videos/", data.len());
                         if let Some(total) = json["total"].as_u64() {
                             if !fetched_total {
                                 videos_to_fetch = total;
@@ -180,13 +193,17 @@ async fn fetch_video(name: String, http_client: Arc<HttpClient>, video_bar: Prog
                             }
                         }
                     } else {
+                        error!(
+                            "{}",
+                            format!("[{}][{}] - JSON : {:?}", name, "/videos/", json).as_str()
+                        );
                         break;
                     }
                     /*let database = Database::default();
                     process_videos(database, result);*/
                 }
                 Err(e) => {
-                    trace!(
+                    info!(
                         "Invalid json from {} : {} \nJson : \n{}\n----\n",
                         name,
                         e,
@@ -219,7 +236,7 @@ async fn fetch_follow(
     instance_bar: ProgressBar,
     video_bar: ProgressBar,
 ) {
-    let mut tasks = Vec::new();
+    //let mut tasks = Vec::new();
     let mut followers_to_fetch: u64 = 1;
     let mut index: u64 = 0;
     let mut fetched_total: bool = false;
@@ -228,15 +245,16 @@ async fn fetch_follow(
             + name.clone().as_str()
             + "/api/v1"
             + api_endpoint
-            + "?count=10000"
+            + "?count=100"
             + "&start="
             + &index.to_string();
         instance_bar.tick();
         let request = Request::get(&query).body(()).unwrap();
         info!(
-            "[{}] GET /{}, start = {}/{}",
-            api_endpoint,
+            "[{}][{}] GET \"{}\" [{}/{}]",
             name,
+            api_endpoint,
+            query,
             index,
             if fetched_total {
                 followers_to_fetch.to_string()
@@ -259,14 +277,20 @@ async fn fetch_follow(
                             fetched_total = true;
                         }
                     }
-
                     match json["data"].as_array() {
                         Some(data) => {
                             index += data.len() as u64;
                             instance_bar.inc(data.len() as u64);
+                            trace!(
+                                "[{}][{}] Received {} objects",
+                                name,
+                                api_endpoint,
+                                data.len()
+                            );
                             for entry in data {
                                 if let Some(hostname) = entry[entry_name]["host"].as_str() {
                                     if hostname != name {
+                                        println!("{:?}", hostname);
                                         tasks.push(queue_for_crawling(
                                             hostname.to_string(),
                                             nodes.clone(),
@@ -282,7 +306,10 @@ async fn fetch_follow(
                                 }
                             }
                         }
-                        None => (),
+                        None => error!(
+                            "{}",
+                            format!("[{}][{}] - JSON : {:?}", name, api_endpoint, json).as_str()
+                        ),
                     }
                 }
                 Err(_e) => (),
@@ -290,7 +317,9 @@ async fn fetch_follow(
             Err(e) => trace!("Failed to fetch followers from {} : {}", query, e),
         }
     }
+    warn!("[{}] join", name);
     join_all(tasks).await;
+    warn!("[{}] joined", name);
 }
 
 async fn fetch(
@@ -303,6 +332,7 @@ async fn fetch(
     instance_bar: ProgressBar,
     video_bar: ProgressBar,
 ) {
+    info!("[{}] - Start", name);
     let instance = Arc::new(Mutex::new(APIInstance::new(name.clone())));
 
     // Request ressources from host
@@ -361,7 +391,7 @@ fn display_cli(mb: Arc<MultiProgress>) {
     mb.join().unwrap();
 }
 
-async fn crawl() {
+async fn crawl(root: Option<String>) {
     // TODO : use SegQueue
     let nodes = Arc::new(Mutex::new(HashSet::new()));
     let result: Arc<Mutex<HashSet<APIInstance>>> = Arc::new(Mutex::new(HashSet::new()));
@@ -380,10 +410,16 @@ async fn crawl() {
     video_bar.tick();
     instance_bar.tick();
     let mb_clone = mb.clone();
-    let instance_db = Arc::new(Mutex::new(InstanceDb::new()));
-    let mut instances = instance_db.lock().await.get_all_instances();
 
-    for instance in &instances {
+    // Handle startup logic : either we received a root to start from, or we fetch joinpeertube.org
+    let mut instances = vec![];
+    let instance_db = Arc::new(Mutex::new(InstanceDb::new()));
+    if let Some(instance) = root {
+        instances.push(instance);
+    } else {
+        instances = instance_db.lock().await.get_all_instances();
+    }
+    for instance in &instances[0..min(LIMIT as usize, instances.len())] {
         nodes.lock().await.insert(instance.clone());
     }
     instance_bar.set_length(instances.len().try_into().unwrap());
@@ -411,8 +447,8 @@ async fn crawl() {
     let start = Instant::now();
 
     let client = HttpClient::builder()
-        .timeout(Duration::from_secs(25))
-        .connect_timeout(Duration::from_secs(25))
+        .timeout(Duration::from_secs(10))
+        .connect_timeout(Duration::from_secs(10))
         .connection_cache_size(4096 * 100_000_000) /* 100 MB cache */
         .build()
         .unwrap();
@@ -472,6 +508,11 @@ struct Opt {
     /// Timestamp (sec, ms, ns, none)
     #[structopt(short = "t", long = "timestamp")]
     ts: Option<stderrlog::Timestamp>,
+
+    /// Root domain name
+    /// Uses joinpeertube.org if missing
+    #[structopt(short = "r", long = "root")]
+    root: Option<String>,
 }
 
 fn main() -> Result<(), ()> {
@@ -482,11 +523,12 @@ fn main() -> Result<(), ()> {
         .quiet(opt.quiet)
         .verbosity(opt.verbose)
         .timestamp(opt.ts.unwrap_or(stderrlog::Timestamp::Off))
+        .color(ColorChoice::Always)
         .init()
         .unwrap();
-
+    info!("Starting crawler");
     if elastic_is_online() {
-        block_on(crawl());
+        block_on(crawl(opt.root));
         Ok(())
     } else {
         error!("Failed to connect to elastic instance");
