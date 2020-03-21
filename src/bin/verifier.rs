@@ -9,6 +9,7 @@ const DIR: &str = "./crawled";
 fn main() -> Result<(), Box<dyn Error>> {
     let mut data: HashMap<String, Video> = HashMap::new();
     println!("Starting inspection");
+    let mut total = 0;
     let files = fs::read_dir(DIR)?;
     for file_res in files {
         if let Ok(file) = file_res {
@@ -36,8 +37,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                     data.insert(video.uuid.clone(), video);
                 }
             }
+            total += count;
             println!("Inspected {} videos",count)
         }
     }
+    println!("There are {} videos in the BDD", total);
     Ok(())
 }
