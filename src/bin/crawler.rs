@@ -18,6 +18,7 @@ use structopt::StructOpt;
 
 use futures::executor::block_on;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use peertube_lib::elastic::create_mappings;
 use peertube_lib::instance_storage::InstanceDb;
 use peertube_lib::peertube_api::fetch_instance_list_from_joinpeertube;
 use peertube_lib::peertube_api::Video;
@@ -437,22 +438,14 @@ async fn crawl(root: Option<String>) {
     );
 }
 
-fn elastic_is_online() -> bool {
-    /*
-    let client = SyncClientBuilder::new()
-        .build()
-        .expect("Failed to initialize elastic client");
-    if let Ok(resp) = client.ping().send() {
-        info!(
-            "Elastic search is online : connected to {}@{}",
-            resp.name(),
-            resp.cluster_name(),
-        );
-        true
-    } else {
+fn elastic_is_online(client: HttpClient) -> bool {
+    if let Err(e) = create_mappings("http://localhost:9200".to_string(), client) {
+        error!("{}", e);
         false
-    }*/
-    true
+    } else {
+        info!("Sucessfully initialized elastic search");
+        true
+    }
 }
 
 #[derive(StructOpt, Debug)]
@@ -476,7 +469,7 @@ struct Opt {
 
 fn main() -> Result<(), ()> {
     let opt = Opt::from_args();
-
+    let client = isahc::HttpClient::new().unwrap();
     stderrlog::new()
         .module(module_path!())
         .quiet(opt.quiet)
@@ -486,7 +479,7 @@ fn main() -> Result<(), ()> {
         .init()
         .unwrap();
     info!("Starting crawler");
-    if elastic_is_online() {
+    if elastic_is_online(client) {
         block_on(crawl(opt.root));
         Ok(())
     } else {
