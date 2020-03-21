@@ -5,6 +5,12 @@ pub struct InstanceDb {
     new_instance_inserted: u32,
 }
 
+impl Default for InstanceDb {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InstanceDb {
     pub fn new() -> InstanceDb {
         let conn = Connection::open("instances.db").expect("Failed to open DB");

@@ -24,6 +24,7 @@ use peertube_lib::peertube_api::Video;
 use std::cmp::min;
 use std::convert::TryInto;
 use std::f32::MAX;
+use std::hash::{Hash, Hasher};
 use std::io::Stdout;
 use std::path::Path;
 use stderrlog;
@@ -36,7 +37,18 @@ const MAX_VIDEOS: u64 = 100;
 
 const LIMIT: u64 = 10;
 
-#[derive(Debug, Hash, Clone, Serialize, Deserialize)]
+#[derive(Clone)]
+struct CrawlCtx {
+    pub nodes: Arc<Mutex<HashSet<String>>>,
+    pub result: Arc<Mutex<HashSet<APIInstance>>>,
+    pub count: Arc<Mutex<u64>>,
+    pub db: Arc<Mutex<InstanceDb>>,
+    pub http_client: Arc<HttpClient>,
+    pub instance_bar: ProgressBar,
+    pub video_bar: ProgressBar,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct APIInstance {
     name: String,
     followers: Vec<String>,
@@ -46,7 +58,7 @@ struct APIInstance {
 impl APIInstance {
     pub fn new(name: String) -> APIInstance {
         APIInstance {
-            name: name,
+            name,
             followers: vec![],
             following: vec![],
         }
@@ -59,39 +71,26 @@ impl PartialEq for APIInstance {
     }
 }
 
+impl Hash for APIInstance {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+    }
+}
 impl Eq for APIInstance {}
 
-async fn queue_for_crawling(
-    item: String,
-    nodes: Arc<Mutex<HashSet<String>>>,
-    result: Arc<Mutex<HashSet<APIInstance>>>,
-    count: Arc<Mutex<u64>>,
-    db: Arc<Mutex<InstanceDb>>,
-    http_client: Arc<HttpClient>,
-    instance_bar: ProgressBar,
-    video_bar: ProgressBar,
-) -> Box<dyn Future<Output = ()>> {
-    let mut res: Box<dyn Future<Output = ()>> = Box::new(async { () });
-    db.lock().await.insert_instance(item.clone());
-    if !nodes.lock().await.contains(&item) {
-        nodes.lock().await.insert(item.clone());
-        let nodes_clone = nodes.clone();
-        let result_clone = result.clone();
-        let mut count_val = count.lock().await;
+async fn queue_for_crawling(item: String, ctx: CrawlCtx) -> Box<dyn Future<Output = ()>> {
+    let mut res: Box<dyn Future<Output = ()>> = Box::new(async {
+        println!("prout");
+    });
+    ctx.db.lock().await.insert_instance(item.clone());
+    if !ctx.nodes.lock().await.contains(&item) {
+        ctx.nodes.lock().await.insert(item.clone());
+        let mut count_val = ctx.count.lock().await;
         if *count_val < LIMIT || LIMIT == 0 {
             *count_val += 1;
-            instance_bar.inc_length(1);
+            ctx.instance_bar.inc_length(1);
             trace!("[{}] Scheduled", item);
-            res = Box::new(fetch(
-                item,
-                nodes_clone,
-                result_clone,
-                count.clone(),
-                db,
-                http_client,
-                instance_bar.clone(),
-                video_bar.clone(),
-            ));
+            res = Box::new(fetch(item, ctx.clone()));
         } else {
             warn!("[{}] Skipped : reached maximum depth", item);
         }
@@ -129,21 +128,20 @@ async fn crawl_from_instances(
     video_bar: ProgressBar,
 ) {
     let mut futures = vec![];
+    let ctx = CrawlCtx {
+        nodes,
+        result,
+        count,
+        db,
+        http_client,
+        instance_bar,
+        video_bar,
+    };
     for instance in instances {
-        //let f =
-        async_std::task::spawn(fetch(
-            instance,
-            nodes.clone(),
-            result.clone(),
-            count.clone(),
-            db.clone(),
-            http_client.clone(),
-            instance_bar.clone(),
-            video_bar.clone(),
-        ));
-        //futures.push(f);
+        let f = fetch(instance, ctx.clone());
+        futures.push(f);
     }
-    //join_all(futures).await;
+    join_all(futures).await;
 }
 
 async fn fetch_video(name: String, http_client: Arc<HttpClient>, video_bar: ProgressBar) {
@@ -180,7 +178,7 @@ async fn fetch_video(name: String, http_client: Arc<HttpClient>, video_bar: Prog
                             }
                         }
                         video_bar.inc(data.len() as u64);
-                        for value in data.into_iter() {
+                        for value in data.iter() {
                             match serde_json::from_value(value.clone()) {
                                 Ok(video) => videos.push(video),
                                 Err(e) => {
@@ -218,7 +216,7 @@ async fn fetch_video(name: String, http_client: Arc<HttpClient>, video_bar: Prog
             }
         }
     }
-    if videos.len() > 0 {
+    if !videos.is_empty() {
         write_to_file(filename, videos).await;
     }
 }
@@ -226,17 +224,11 @@ async fn fetch_video(name: String, http_client: Arc<HttpClient>, video_bar: Prog
 async fn fetch_follow(
     api_endpoint: &'static str,
     entry_name: &'static str,
-    instance: Arc<Mutex<APIInstance>>,
     name: String,
-    nodes: Arc<Mutex<HashSet<String>>>,
-    result: Arc<Mutex<HashSet<APIInstance>>>,
-    count: Arc<Mutex<u64>>,
-    db: Arc<Mutex<InstanceDb>>,
-    http_client: Arc<HttpClient>,
-    instance_bar: ProgressBar,
-    video_bar: ProgressBar,
+    ctx: CrawlCtx,
+    instance: Arc<Mutex<APIInstance>>,
 ) {
-    //let mut tasks = Vec::new();
+    let mut tasks = Vec::new();
     let mut followers_to_fetch: u64 = 1;
     let mut index: u64 = 0;
     let mut fetched_total: bool = false;
@@ -248,7 +240,7 @@ async fn fetch_follow(
             + "?count=100"
             + "&start="
             + &index.to_string();
-        instance_bar.tick();
+        ctx.instance_bar.tick();
         let request = Request::get(&query).body(()).unwrap();
         info!(
             "[{}][{}] GET \"{}\" [{}/{}]",
@@ -262,25 +254,23 @@ async fn fetch_follow(
                 "?".to_string()
             }
         );
-        match http_client.send_async(request).await {
+        match ctx.http_client.send_async(request).await {
             Ok(mut req) => match req.json::<serde_json::Value>() {
                 Ok(json) => {
                     if let Some(total) = json["total"].as_u64() {
                         if !fetched_total {
                             followers_to_fetch = total;
                             fetched_total = true;
-                            instance_bar.inc_length(total);
+                            ctx.instance_bar.inc_length(total);
                         }
-                    } else {
-                        if !fetched_total {
-                            followers_to_fetch = 0;
-                            fetched_total = true;
-                        }
+                    } else if !fetched_total {
+                        followers_to_fetch = 0;
+                        fetched_total = true;
                     }
                     match json["data"].as_array() {
                         Some(data) => {
                             index += data.len() as u64;
-                            instance_bar.inc(data.len() as u64);
+                            ctx.instance_bar.inc(data.len() as u64);
                             trace!(
                                 "[{}][{}] Received {} objects",
                                 name,
@@ -293,13 +283,7 @@ async fn fetch_follow(
                                         println!("{:?}", hostname);
                                         tasks.push(queue_for_crawling(
                                             hostname.to_string(),
-                                            nodes.clone(),
-                                            result.clone(),
-                                            count.clone(),
-                                            db.clone(),
-                                            http_client.clone(),
-                                            instance_bar.clone(),
-                                            video_bar.clone(),
+                                            ctx.clone(),
                                         ));
                                         instance.lock().await.followers.push(hostname.to_owned());
                                     }
@@ -317,21 +301,11 @@ async fn fetch_follow(
             Err(e) => trace!("Failed to fetch followers from {} : {}", query, e),
         }
     }
-    warn!("[{}] join", name);
+    println!("Awaiting {} futures", tasks.len());
     join_all(tasks).await;
-    warn!("[{}] joined", name);
 }
 
-async fn fetch(
-    name: String,
-    nodes: Arc<Mutex<HashSet<String>>>,
-    result: Arc<Mutex<HashSet<APIInstance>>>,
-    count: Arc<Mutex<u64>>,
-    db: Arc<Mutex<InstanceDb>>,
-    http_client: Arc<HttpClient>,
-    instance_bar: ProgressBar,
-    video_bar: ProgressBar,
-) {
+async fn fetch(name: String, ctx: CrawlCtx) {
     info!("[{}] - Start", name);
     let instance = Arc::new(Mutex::new(APIInstance::new(name.clone())));
 
@@ -339,35 +313,24 @@ async fn fetch(
     let t0 = fetch_follow(
         "/server/following",
         "following",
-        instance.clone(),
         name.clone(),
-        nodes.clone(),
-        result.clone(),
-        count.clone(),
-        db.clone(),
-        http_client.clone(),
-        instance_bar.clone(),
-        video_bar.clone(),
+        ctx.clone(),
+        instance.clone(),
     );
 
     let t1 = fetch_follow(
         "/server/followers",
         "followers",
-        instance.clone(),
         name.clone(),
-        nodes.clone(),
-        result.clone(),
-        count.clone(),
-        db.clone(),
-        http_client.clone(),
-        instance_bar.clone(),
-        video_bar.clone(),
+        ctx.clone(),
+        instance.clone(),
     );
 
-    let t2 = fetch_video(name, http_client, video_bar);
+    let t2 = fetch_video(name.clone(), ctx.http_client, ctx.video_bar);
 
     join3(t0, t1, t2).await;
-    instance_bar.inc(1);
+    ctx.instance_bar.inc(1);
+    trace!("[{}] Done", name);
     /*
             let f = t0
                 .join(t1)
@@ -469,7 +432,7 @@ async fn crawl(root: Option<String>) {
     )
     .await;
     instance_bar.finish_with_message(&format!("Found {} instances", nodes.lock().await.len()));
-    video_bar.finish_with_message(&format!("Fetched all videos"));
+    video_bar.finish_with_message("Fetched all videos");
     let duration = start.elapsed();
     info!(
         "Added {} instances in {} seconds",
