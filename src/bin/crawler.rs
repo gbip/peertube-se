@@ -36,7 +36,7 @@ const OUTPUT_DIR: &str = "crawled/";
 /** Maximum number of videos to fetch from an instance */
 const MAX_VIDEOS: u64 = 100;
 
-const LIMIT: u64 = 10;
+const LIMIT: u64 = 0;
 
 #[derive(Clone)]
 struct CrawlCtx {
@@ -80,9 +80,7 @@ impl Hash for APIInstance {
 impl Eq for APIInstance {}
 
 async fn queue_for_crawling(item: String, ctx: CrawlCtx) -> Pin<Box<dyn Future<Output = ()>>> {
-    let mut res: Pin<Box<dyn Future<Output = ()>>> = Box::pin(async {
-        println!("prout");
-    });
+    let mut res: Pin<Box<dyn Future<Output = ()>>> = Box::pin(async {});
     ctx.db.lock().await.insert_instance(item.clone());
     if !ctx.nodes.lock().await.contains(&item) {
         ctx.nodes.lock().await.insert(item.clone());
@@ -93,10 +91,10 @@ async fn queue_for_crawling(item: String, ctx: CrawlCtx) -> Pin<Box<dyn Future<O
             trace!("[{}] Scheduled", item);
             res = Box::pin(fetch(item, ctx.clone()));
         } else {
-            warn!("[{}] Skipped : reached maximum depth", item);
+            //trace!("[{}] Skipped : reached maximum depth", item);
         }
     } else {
-        trace!("[{}] Skipped: already in queue", item);
+        //trace!("[{}] Skipped: already in queue", item);
     }
     res
 }
@@ -161,16 +159,11 @@ async fn fetch_video(name: String, http_client: Arc<HttpClient>, video_bar: Prog
             + &index.to_string();
         video_bar.tick();
         let request = Request::get(&query_videos).body(()).unwrap();
-        info!(
-            "[{}][{}] GET \"{}\", [{}]",
-            name, query_videos, "/videos/", index
-        );
         match http_client.send_async(request).await {
             Ok(mut resp) => match resp.json::<serde_json::Value>() {
                 Ok(json) => {
                     if let Some(data) = json["data"].as_array() {
                         index += data.len() as u64;
-                        trace!("[{}][{}] Received {} objects", name, "/videos/", data.len());
                         if let Some(total) = json["total"].as_u64() {
                             if !fetched_total {
                                 videos_to_fetch = total;
@@ -202,7 +195,7 @@ async fn fetch_video(name: String, http_client: Arc<HttpClient>, video_bar: Prog
                     process_videos(database, result);*/
                 }
                 Err(e) => {
-                    info!(
+                    trace!(
                         "Invalid json from {} : {} \nJson : \n{}\n----\n",
                         name,
                         e,
@@ -217,6 +210,10 @@ async fn fetch_video(name: String, http_client: Arc<HttpClient>, video_bar: Prog
             }
         }
     }
+    info!(
+        "[{}][{}] Fetch complete ({} videos)",
+        name, "/videos/", index
+    );
     if !videos.is_empty() {
         write_to_file(filename, videos).await;
     }
@@ -243,18 +240,6 @@ async fn fetch_follow(
             + &index.to_string();
         ctx.instance_bar.tick();
         let request = Request::get(&query).body(()).unwrap();
-        info!(
-            "[{}][{}] GET \"{}\" [{}/{}]",
-            name,
-            api_endpoint,
-            query,
-            index,
-            if fetched_total {
-                followers_to_fetch.to_string()
-            } else {
-                "?".to_string()
-            }
-        );
         match ctx.http_client.send_async(request).await {
             Ok(mut req) => match req.json::<serde_json::Value>() {
                 Ok(json) => {
@@ -272,16 +257,9 @@ async fn fetch_follow(
                         Some(data) => {
                             index += data.len() as u64;
                             ctx.instance_bar.inc(data.len() as u64);
-                            trace!(
-                                "[{}][{}] Received {} objects",
-                                name,
-                                api_endpoint,
-                                data.len()
-                            );
                             for entry in data {
                                 if let Some(hostname) = entry[entry_name]["host"].as_str() {
                                     if hostname != name {
-                                        println!("{:?}", hostname);
                                         tasks.push(
                                             queue_for_crawling(hostname.to_string(), ctx.clone())
                                                 .await,
@@ -291,23 +269,51 @@ async fn fetch_follow(
                                 }
                             }
                         }
-                        None => error!(
-                            "{}",
-                            format!("[{}][{}] - JSON : {:?}", name, api_endpoint, json).as_str()
-                        ),
+                        None => {
+                            error!(
+                                "{}",
+                                format!(
+                                    "[{}][{}] - Non spec compliant json : {:?}",
+                                    name, api_endpoint, json
+                                )
+                                .as_str()
+                            );
+                            break;
+                        }
                     }
                 }
-                Err(_e) => (),
+                Err(e) => {
+                    trace!("[{}][{}] Failed to parse json : {} ", name, api_endpoint, e);
+                    break;
+                }
             },
-            Err(e) => trace!("Failed to fetch followers from {} : {}", query, e),
+            Err(e) => {
+                match e {
+                    isahc::Error::ConnectFailed
+                    | isahc::Error::BadServerCertificate(_)
+                    | isahc::Error::SSLConnectFailed(_)
+                    | isahc::Error::CouldntResolveHost => {}
+                    _ => trace!("[{}][{}] Failed : {}", name, api_endpoint, e),
+                };
+                break;
+            }
         }
     }
-    println!("Awaiting {} futures", tasks.len());
+    info!(
+        "[{}][{}] Fetch complete ({}/{})",
+        name,
+        api_endpoint,
+        index,
+        if fetched_total {
+            followers_to_fetch.to_string()
+        } else {
+            "?".to_string()
+        }
+    );
     join_all(tasks).await;
 }
 
 async fn fetch(name: String, ctx: CrawlCtx) {
-    info!("[{}] - Start", name);
     let instance = Arc::new(Mutex::new(APIInstance::new(name.clone())));
 
     // Request ressources from host
@@ -321,7 +327,7 @@ async fn fetch(name: String, ctx: CrawlCtx) {
 
     let t1 = fetch_follow(
         "/server/followers",
-        "followers",
+        "follower",
         name.clone(),
         ctx.clone(),
         instance.clone(),
@@ -332,17 +338,6 @@ async fn fetch(name: String, ctx: CrawlCtx) {
     join3(t0, t1, t2).await;
     ctx.instance_bar.inc(1);
     trace!("[{}] Done", name);
-    /*
-            let f = t0
-                .join(t1)
-                .and_then(move |(val, _): (Arc<Mutex<APIInstance>>, _)| {
-                    result.lock().unwrap().insert(val.lock().unwrap().clone());
-                    ok(())
-                });
-            tokio::spawn(f);
-            ok(())
-        })
-    */
 }
 
 fn create_output_folder() {
