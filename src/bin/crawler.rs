@@ -27,6 +27,7 @@ use std::f32::MAX;
 use std::hash::{Hash, Hasher};
 use std::io::Stdout;
 use std::path::Path;
+use std::pin::Pin;
 use stderrlog;
 use stderrlog::ColorChoice;
 
@@ -78,8 +79,8 @@ impl Hash for APIInstance {
 }
 impl Eq for APIInstance {}
 
-async fn queue_for_crawling(item: String, ctx: CrawlCtx) -> Box<dyn Future<Output = ()>> {
-    let mut res: Box<dyn Future<Output = ()>> = Box::new(async {
+async fn queue_for_crawling(item: String, ctx: CrawlCtx) -> Pin<Box<dyn Future<Output = ()>>> {
+    let mut res: Pin<Box<dyn Future<Output = ()>>> = Box::pin(async {
         println!("prout");
     });
     ctx.db.lock().await.insert_instance(item.clone());
@@ -90,7 +91,7 @@ async fn queue_for_crawling(item: String, ctx: CrawlCtx) -> Box<dyn Future<Outpu
             *count_val += 1;
             ctx.instance_bar.inc_length(1);
             trace!("[{}] Scheduled", item);
-            res = Box::new(fetch(item, ctx.clone()));
+            res = Box::pin(fetch(item, ctx.clone()));
         } else {
             warn!("[{}] Skipped : reached maximum depth", item);
         }
@@ -281,10 +282,10 @@ async fn fetch_follow(
                                 if let Some(hostname) = entry[entry_name]["host"].as_str() {
                                     if hostname != name {
                                         println!("{:?}", hostname);
-                                        tasks.push(queue_for_crawling(
-                                            hostname.to_string(),
-                                            ctx.clone(),
-                                        ));
+                                        tasks.push(
+                                            queue_for_crawling(hostname.to_string(), ctx.clone())
+                                                .await,
+                                        );
                                         instance.lock().await.followers.push(hostname.to_owned());
                                     }
                                 }
